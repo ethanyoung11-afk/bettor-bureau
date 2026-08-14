@@ -1000,11 +1000,6 @@ def _render_priority_value_bets(
     st.subheader("Best +EV bets for your sportsbooks")
     minimum = Decimal(str(st.session_state["min_ev"])) / Decimal("100")
     qualifying = tuple(item for item in values if item.expected_value >= minimum)
-    sportsbook_label = "sportsbook" if len(my_books) == 1 else "sportsbooks"
-    st.caption(
-        f"{len(my_books)} {sportsbook_label} selected · {minimum:.1%} minimum EV · all other "
-        "available books used for consensus"
-    )
     if not my_books:
         st.info("Select at least one sportsbook under My sportsbooks.")
         return
