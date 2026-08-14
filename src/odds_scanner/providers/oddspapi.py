@@ -204,7 +204,7 @@ class OddsPapiProvider:
         "fanduel",
         "betrivers",
     )
-    include_all_bookmakers: bool = True
+    include_all_bookmakers: bool = False
     bookmaker_cooldown_seconds: float = 1.6
     timeout_seconds: float = 30.0
     base_url: str = "https://api.oddspapi.io/v4"
@@ -250,12 +250,17 @@ class OddsPapiProvider:
             "verbosity": 3,
             "oddsFormat": "decimal",
         }
-        # OddsPapi returns every available sportsbook when `bookmakers` is omitted.
-        # This gives the consensus engine the broadest possible market in one request.
-        if not self.include_all_bookmakers:
-            odds_params["bookmakers"] = ",".join(requested_bookmakers)
-        payload = self._request("odds-by-tournaments", odds_params)
-        raw_events = self._event_list(payload)
+        raw_events: list[Mapping[str, Any]] = []
+        if self.include_all_bookmakers:
+            payload = self._request("odds-by-tournaments", odds_params)
+            raw_events.extend(self._event_list(payload))
+        else:
+            # Starter accounts accept exactly one bookmaker per request. Query every
+            # configured book so consensus remains as broad as the available market.
+            for bookmaker in requested_bookmakers:
+                bookmaker_params = {**odds_params, "bookmaker": bookmaker}
+                payload = self._request("odds-by-tournaments", bookmaker_params)
+                raw_events.extend(self._event_list(payload))
 
         sports = {}
         leagues = {}

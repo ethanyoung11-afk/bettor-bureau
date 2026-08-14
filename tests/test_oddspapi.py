@@ -217,7 +217,7 @@ def test_oddspapi_normalizes_all_books_and_featured_markets() -> None:
     assert provider.request_count == 3
 
 
-def test_oddspapi_can_limit_a_single_batched_request_to_selected_books() -> None:
+def test_oddspapi_queries_each_selected_book_on_starter_accounts() -> None:
     session = StubSession({"odds-by-tournaments": []})
     provider = OddsPapiProvider(
         api_key="test",
@@ -231,9 +231,12 @@ def test_oddspapi_can_limit_a_single_batched_request_to_selected_books() -> None
 
     provider.fetch_snapshot(["americanfootball_nfl"], ["h2h"])
 
-    assert len(session.calls) == 1
-    assert session.calls[0][1]["bookmakers"] == "playnow,pinnacle"
-    assert provider.request_count == 1
+    assert len(session.calls) == 2
+    assert [params["bookmaker"] for _, params in session.calls] == [
+        "playnow",
+        "pinnacle",
+    ]
+    assert provider.request_count == 2
 
 
 def test_oddspapi_reuses_discovery_catalogs() -> None:

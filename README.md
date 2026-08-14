@@ -39,9 +39,10 @@ The intentionally stale demo book verifies that stale prices are excluded from o
 For the BC-first free workflow, select **OddsPapi Free**, open **Odds Data**, choose the sports
 and markets you want, and press **Refresh Odds**. Page loads, visitors, filters, sorting, and
 navigation never call the provider. The initial refresh scope supports NFL, NCAAF, CFL, NBA,
-and NHL, including available moneylines, spreads, totals, and player props. OddsPapi's all-book
-endpoint supplies the broad consensus in one odds request. The first refresh also caches the
-provider's league and market catalogs, so it can use a few additional requests.
+and NHL, including available moneylines, spreads, totals, and player props. Starter accounts
+require one odds request per sportsbook, so a full ten-book update normally costs about ten
+requests. The first refresh also caches the provider's league and market catalogs, so it can use
+a few additional requests.
 
 Every managed refresh rechecks affected +EV recommendations. Price moves or removed markets
 deactivate the recommendation without deleting its history. Failed requests preserve the last
@@ -67,7 +68,7 @@ should use Postgres so every visitor sees the same durable snapshot.
 
 The browser checks the shared database once a minute and redraws only when the central worker has
 stored newer odds. These checks do not call OddsPapi. The included GitHub workflow runs the
-central refresh every four hours and can also be started manually. It protects a configurable
+central refresh four times per week and can also be started manually. It protects a configurable
 monthly reserve before making provider calls.
 
 ### Free beta deployment
@@ -80,9 +81,9 @@ monthly reserve before making provider calls.
    Streamlit's encrypted secrets panel.
 6. Choose a memorable `linescout.streamlit.app` subdomain and share that URL.
 
-The scheduled updater is in `.github/workflows/refresh-odds.yml`. Its defaults are six refreshes
-per day, a 250-call monthly limit, and a 25-call owner reserve. Increase the schedule only after
-the provider plan is upgraded.
+The scheduled updater is in `.github/workflows/refresh-odds.yml`. Its free-plan defaults are four
+full refreshes per week, a 250-call monthly limit, and a 25-call owner reserve. Manual owner
+refreshes share the same allowance. Increase the schedule only after the provider plan is upgraded.
 
 Select **The Odds API** in the sidebar, enter a key from
 [The Odds API](https://the-odds-api.com/), and choose **Fetch live odds**. The rest of the product

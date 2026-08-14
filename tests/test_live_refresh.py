@@ -33,9 +33,10 @@ def test_scheduled_request_uses_all_configured_leagues_and_markets() -> None:
 
 
 def test_estimated_request_count_includes_only_missing_discovery() -> None:
-    cold = OddsPapiProvider(api_key="test")
+    cold = OddsPapiProvider(api_key="test", bookmaker_slugs=("playnow", "pinnacle"))
     warm = OddsPapiProvider(
         api_key="test",
+        bookmaker_slugs=("playnow", "pinnacle"),
         tournament_ids={
             "americanfootball_nfl": 1,
             "basketball_nba": 2,
@@ -44,8 +45,8 @@ def test_estimated_request_count_includes_only_missing_discovery() -> None:
     )
     leagues = ("americanfootball_nfl", "basketball_nba")
 
-    assert estimated_request_count(cold, leagues) == 4
-    assert estimated_request_count(warm, leagues) == 1
+    assert estimated_request_count(cold, leagues) == 5
+    assert estimated_request_count(warm, leagues) == 2
 
 
 def test_monthly_usage_resets_without_erasing_prior_month(tmp_path) -> None:

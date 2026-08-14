@@ -124,7 +124,12 @@ def estimated_request_count(
         if key not in provider.tournament_ids
     }
     discovery_requests = len(missing_sports) + (0 if provider.market_catalog else 1)
-    return discovery_requests + 1
+    odds_requests = (
+        1
+        if provider.include_all_bookmakers
+        else len(tuple(dict.fromkeys(provider.bookmaker_slugs)))
+    )
+    return discovery_requests + odds_requests
 
 
 def build_refresh_request(
@@ -158,7 +163,7 @@ def main() -> int:
     request = build_refresh_request(league_keys, market_keys)
     provider = OddsPapiProvider(
         api_key=api_key,
-        include_all_bookmakers=True,
+        include_all_bookmakers=False,
         tournament_ids={
             str(key): int(value)
             for key, value in _json_object(settings.get("oddspapi_tournament_ids")).items()

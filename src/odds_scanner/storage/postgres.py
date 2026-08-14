@@ -553,13 +553,16 @@ class PostgresQuoteRepository:
         with self._connection() as cursor:
             cursor.execute(
                 "SELECT "
-                "COALESCE(SUM(requests_made) FILTER (WHERE started_at LIKE %s), 0) today, "
-                "COALESCE(SUM(requests_made) FILTER (WHERE started_at LIKE %s), 0) month, "
-                "COALESCE(SUM(credits_consumed) FILTER (WHERE started_at LIKE %s), 0) credits, "
-                "COUNT(*) FILTER (WHERE status = 'success') successes, "
-                "COUNT(*) FILTER (WHERE status = 'failed') failures, "
-                "MAX(finished_at) FILTER (WHERE status = 'success') last_success, "
-                "MAX(finished_at) FILTER (WHERE status = 'failed') last_failure "
+                "COALESCE(SUM(requests_made) FILTER (WHERE started_at LIKE %s), 0) "
+                "AS requests_today, "
+                "COALESCE(SUM(requests_made) FILTER (WHERE started_at LIKE %s), 0) "
+                "AS requests_month, "
+                "COALESCE(SUM(credits_consumed) FILTER (WHERE started_at LIKE %s), 0) "
+                "AS credits_month, "
+                "COUNT(*) FILTER (WHERE status = 'success') AS successful_count, "
+                "COUNT(*) FILTER (WHERE status = 'failed') AS failed_count, "
+                "MAX(finished_at) FILTER (WHERE status = 'success') AS last_success, "
+                "MAX(finished_at) FILTER (WHERE status = 'failed') AS last_failure "
                 "FROM refresh_runs WHERE provider_id = %s",
                 (f"{day_prefix}%", f"{month_prefix}%", f"{month_prefix}%", provider_id),
             )
@@ -568,11 +571,11 @@ class PostgresQuoteRepository:
             return ApiUsageSummary(provider_id, 0, 0, 0, 0, 0, None, None)
         return ApiUsageSummary(
             provider_id=provider_id,
-            requests_today=int(row["today"] or 0),
-            requests_this_month=int(row["month"] or 0),
-            credits_this_month=int(row["credits"] or 0),
-            successful_refreshes=int(row["successes"] or 0),
-            failed_refreshes=int(row["failures"] or 0),
+            requests_today=int(row["requests_today"] or 0),
+            requests_this_month=int(row["requests_month"] or 0),
+            credits_this_month=int(row["credits_month"] or 0),
+            successful_refreshes=int(row["successful_count"] or 0),
+            failed_refreshes=int(row["failed_count"] or 0),
             last_successful_refresh=(
                 datetime.fromisoformat(str(row["last_success"]))
                 if row["last_success"] is not None

@@ -1551,7 +1551,7 @@ def _sidebar(
                         type="password",
                     )
                     st.caption(
-                        "One odds request returns every available sportsbook; the first update "
+                        "Each full update checks every configured sportsbook. The first update "
                         "may also cache provider catalogs."
                     )
                     st.progress(
