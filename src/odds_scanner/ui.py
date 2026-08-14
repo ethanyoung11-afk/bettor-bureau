@@ -1363,7 +1363,7 @@ def _render_ev_filter_bar(
             ):
                 for book in available_books:
                     st.toggle(
-                        f"★ {book}" if book in PRIORITY_BOOKS else book,
+                        book,
                         value=True,
                         key=_sportsbook_toggle_key(mode, book),
                     )
