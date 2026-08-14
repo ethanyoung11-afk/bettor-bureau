@@ -15,6 +15,7 @@ from odds_scanner.ui import (
     _market_range_label,
     _password_matches,
     _selection_label,
+    _value_comparison_markup,
 )
 
 
@@ -131,5 +132,9 @@ def test_market_range_uses_actual_offered_prices(now):
     )[0]
 
     label = _market_range_label(opportunity, quotes, "American")
+    details = _value_comparison_markup(opportunity, quotes, "American", now)
 
     assert " to " in label
+    assert "Consensus win probability" in details
+    assert "Break-even probability" in details
+    assert "No-vig" not in details

@@ -437,7 +437,9 @@ def _inject_theme() -> None:
         }
         .st-key-top_opportunity div[data-testid="stMetricValue"] { font-size:1.65rem; }
         .ev-featured-metrics {
-            display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); align-items:stretch;
+            display:grid;
+            grid-template-columns:.78fr .82fr 1.45fr .82fr .9fr;
+            align-items:stretch;
         }
         .ev-featured-metric {
             min-width:0; border-left:1px solid #2a3747; padding:.25rem .65rem;
@@ -456,6 +458,16 @@ def _inject_theme() -> None:
             color:#8d9aac; font-size:.65rem; margin-top:.35rem; white-space:nowrap;
             overflow:hidden; text-overflow:ellipsis;
         }
+        .ev-probability-pair {
+            display:grid; grid-template-columns:1fr auto 1fr; align-items:center; gap:5px;
+        }
+        .ev-probability-pair strong {
+            display:block; color:#e3e9f1; font-size:1.05rem; line-height:1.1; white-space:nowrap;
+        }
+        .ev-probability-pair small {
+            display:block; color:#8794a7; font-size:.56rem; line-height:1.2; margin-top:4px;
+        }
+        .ev-probability-pair em { color:#667488; font-size:.58rem; font-style:normal; }
         .st-key-top_opportunity [data-testid="stLinkButton"] a {
             min-height:48px; font-size:.92rem; font-weight:850; background:#22c55e !important;
             border-color:#39d98a !important; color:#04110a !important; box-shadow:none;
@@ -492,6 +504,10 @@ def _inject_theme() -> None:
             color:#8e9bad; font-size:.68rem; display:block; margin-top:2px;
         }
         .ev-cell-main { color:#dbe2eb; font-size:.82rem; }
+        .ev-probability-cell { display:flex; gap:9px; align-items:center; }
+        .ev-probability-cell span { color:#dce3ec; font-size:.76rem; white-space:nowrap; }
+        .ev-probability-cell small { color:#8390a3; font-size:.57rem; display:block; }
+        .ev-probability-divider { color:#536177 !important; font-size:.62rem !important; }
         .ev-odds { color:#39df83; font-weight:850; font-size:1rem; }
         .ev-action {
             display:inline-flex; justify-content:center; padding:6px 9px; border:1px solid #1a9c55;
@@ -526,15 +542,15 @@ def _inject_theme() -> None:
         }
         @media (max-width: 1450px) {
             .ev-grid {
-                grid-template-columns:38px minmax(220px,2fr) 100px 90px 90px
-                80px 95px 90px 24px;
+                grid-template-columns:38px minmax(220px,2fr) 90px 80px 125px
+                75px 85px 80px 24px;
             }
             .ev-fair,.ev-consensus,.ev-range { display:none; }
         }
         @media (max-width: 760px) {
             .block-container { padding:.6rem .75rem 1.2rem; }
             .ev-grid {
-                grid-template-columns:34px minmax(150px,2fr) 72px 70px 70px 74px 22px;
+                grid-template-columns:34px minmax(150px,2fr) 72px 90px 70px 74px 22px;
                 column-gap:7px;
             }
             .ev-market,.ev-fair,.ev-consensus,.ev-range,.ev-best-book { display:none; }
@@ -565,8 +581,8 @@ def _render_page_header(mode: str) -> Any:
         )
         st.title("+EV Bets")
         st.markdown(
-            '<div class="ev-page-subtitle">Positive expected value bets based on our no-vig '
-            "market consensus.</div>",
+            '<div class="ev-page-subtitle">Positive expected value bets identified by comparing '
+            "the best available odds with the broader sportsbook market.</div>",
             unsafe_allow_html=True,
         )
     with status_column:
@@ -1230,7 +1246,8 @@ def _render_ev_filter_bar(
         book_count = str(len(selected_before)) if selected_before else "All"
         with book_col.popover(f"My Sportsbooks ({book_count})", width="stretch"):
             st.caption(
-                "Only these books can be recommended. All available books still inform consensus."
+                "Only these books can be recommended. All available books still inform the "
+                "broader market comparison."
             )
             for book in available_books:
                 st.toggle(
@@ -1256,17 +1273,17 @@ def _render_ev_filter_bar(
 
         with more_col.popover("More Filters", width="stretch"):
             implied_preset = st.selectbox(
-                "Minimum implied probability",
+                "Minimum break-even probability",
                 ["Any", "10%+", "20%+", "30%+", "40%+", "50%+", "Custom"],
                 key="ev_implied_preset",
                 help=(
-                    "The break-even win probability represented by the offered odds. "
-                    "For example, +225 requires a 30.8% win rate to break even."
+                    "How often the bet needs to win at the offered odds to break even over time. "
+                    "For example, +225 requires a 30.8% win rate."
                 ),
             )
             if implied_preset == "Custom":
                 st.number_input(
-                    "Custom implied probability %",
+                    "Custom break-even probability %",
                     min_value=0.0,
                     max_value=100.0,
                     step=1.0,
@@ -1376,7 +1393,7 @@ def _render_ev_filter_bar(
     if minimum_ev > 0:
         chips.append(f"EV ≥ {minimum_ev:.0%}")
     if implied_percent > 0:
-        chips.append(f"Implied Prob. ≥ {implied_percent}%")
+        chips.append(f"Break-even Prob. ≥ {implied_percent}%")
     if use_odds_range:
         chips.append(f"Odds: {minimum_american:+d} to {maximum_american:+d}")
     if consensus_preset != "Any":
@@ -1550,7 +1567,7 @@ def _render_priority_value_bets(
     if not values:
         st.markdown(
             '<div class="ev-empty"><strong>No +EV bets match these filters.</strong>'
-            "Try lowering your minimum EV or implied-probability threshold, expanding your "
+            "Try lowering your minimum EV or break-even probability, expanding your "
             "sportsbook selection, or clearing some filters.</div>",
             unsafe_allow_html=True,
         )
@@ -1565,6 +1582,14 @@ def _render_priority_value_bets(
     fair_odds = format_odds(top.fair_odds, odds_format)
     offered_probability = implied_probability(top.quote.decimal_odds)
     market_range = _market_range_label(top, quotes, odds_format)
+    probability_tooltip = html.escape(
+        "How this works — Win Probability is our estimate of how likely the bet is to win, "
+        "based on prices across multiple sportsbooks. Break-even Probability is how often the "
+        f"bet needs to win at {offered_odds} for you to break even over time. Here, the bet is "
+        f"estimated to win {top.fair_probability:.1%} of the time, while {offered_odds} only "
+        f"requires a {offered_probability:.1%} win rate. That gap is why the bet has positive EV.",
+        quote=True,
+    )
     sportsbook_url = SPORTSBOOK_URLS.get(top.quote.sportsbook.name)
     with st.container(border=True, key="top_opportunity"):
         identity_column, metrics_column, action_column = st.columns(
@@ -1606,19 +1631,21 @@ def _render_priority_value_bets(
                 "ⓘ</span></div>"
                 f'<div class="ev-featured-value positive">{offered_odds}</div>'
                 f'<div class="ev-featured-sub">{html.escape(top.quote.sportsbook.name)}</div></div>'
-                '<div class="ev-featured-metric"><div class="ev-featured-label">Implied Prob. '
-                '<span class="ev-featured-info" title="Break-even win probability represented '
-                'by the offered odds.">ⓘ</span></div>'
-                f'<div class="ev-featured-value">{offered_probability:.1%}</div>'
-                '<div class="ev-featured-sub">Break-even</div></div>'
+                '<div class="ev-featured-metric"><div class="ev-featured-label">Win Probability '
+                f'<span class="ev-featured-info" title="{probability_tooltip}">ⓘ</span></div>'
+                '<div class="ev-probability-pair"><span>'
+                f"<strong>{top.fair_probability:.1%}</strong><small>Consensus estimate</small>"
+                '</span><em>vs.</em><span>'
+                f"<strong>{offered_probability:.1%}</strong>"
+                f"<small>Break-even at {offered_odds}</small></span></div></div>"
                 '<div class="ev-featured-metric"><div class="ev-featured-label">Fair Odds '
-                '<span class="ev-featured-info" title="Estimated fair price based on the no-vig '
-                'market consensus.">ⓘ</span></div>'
+                '<span class="ev-featured-info" title="The estimated fair price based on prices '
+                'across multiple sportsbooks.">ⓘ</span></div>'
                 f'<div class="ev-featured-value">{fair_odds}</div>'
                 '<div class="ev-featured-sub">Consensus</div></div>'
                 '<div class="ev-featured-metric"><div class="ev-featured-label">Consensus '
                 '<span class="ev-featured-info" title="Sportsbooks contributing to this '
-                'opportunity’s no-vig fair price.">ⓘ</span></div>'
+                'opportunity’s market estimate.">ⓘ</span></div>'
                 f'<div class="ev-featured-value">{top.reference_books} books</div>'
                 f'<div class="ev-featured-sub">Range: {market_range}</div></div></div>',
                 unsafe_allow_html=True,
@@ -1636,7 +1663,7 @@ def _render_priority_value_bets(
                 )
         st.markdown(
             '<div class="best-bet-support">'
-            f"<span>◎ Consensus fair line: <strong>{fair_odds}</strong></span>"
+            f"<span>◎ Consensus fair odds: <strong>{fair_odds}</strong></span>"
             f"<span>▥ Market range: <strong>{market_range}</strong></span>"
             f"<span>◷ Data freshness: <strong>{_age_label(top.quote, as_of)} ago</strong></span>"
             "</div>",
@@ -1665,7 +1692,9 @@ def _render_priority_value_bets(
     header = (
         '<div class="ev-table-head ev-grid"><span>#</span><span>MATCHUP</span>'
         '<span class="ev-market">MARKET</span><span>BEST ODDS</span>'
-        '<span>IMPLIED PROB.</span><span class="ev-fair">FAIR ODDS</span><span>EV</span>'
+        '<span title="Win Probability is the market estimate. Break-even Probability is the '
+        'win rate required at the offered odds.">WIN PROBABILITY ⓘ</span>'
+        '<span class="ev-fair">FAIR ODDS</span><span>EV</span>'
         '<span class="ev-consensus">CONSENSUS</span><span class="ev-range">MARKET RANGE</span>'
         '<span class="ev-best-book">BEST BOOK</span><span>ACTION</span><span></span></div>'
     )
@@ -1696,8 +1725,10 @@ def _render_priority_value_bets(
             f'<span class="ev-market ev-cell-main">{html.escape(item_market)}</span>'
             f'<span><span class="ev-odds">{item_odds}</span>'
             f'<span class="ev-cell-sub">{html.escape(item_book)}</span></span>'
-            f'<span class="ev-cell-main">{item_implied:.1%}'
-            '<span class="ev-cell-sub">Break-even</span></span>'
+            '<span class="ev-probability-cell"><span>'
+            f"{item.fair_probability:.1%}<small>Consensus</small></span>"
+            '<span class="ev-probability-divider">vs.</span><span>'
+            f"{item_implied:.1%}<small>Break-even</small></span></span>"
             f'<span class="ev-fair ev-cell-main">{item_fair_odds}'
             '<span class="ev-cell-sub">Consensus</span></span>'
             f'<span class="ev-positive">{_format_edge(item.expected_value)}</span>'
@@ -1729,9 +1760,9 @@ def _value_comparison_markup(
     metric_markup = (
         '<div class="ev-details-metrics">'
         f'<span class="ev-detail-metric">Fair odds<strong>{fair_odds}</strong></span>'
-        '<span class="ev-detail-metric">Fair probability'
+        '<span class="ev-detail-metric">Consensus win probability'
         f"<strong>{opportunity.fair_probability:.1%}</strong></span>"
-        '<span class="ev-detail-metric">Offered implied probability'
+        '<span class="ev-detail-metric">Break-even probability'
         f"<strong>{offered_probability:.1%}</strong></span>"
         f'<span class="ev-detail-metric">EV<strong>{edge}</strong></span>'
         f'<span class="ev-detail-metric">Market range<strong>{market_range}</strong></span>'
@@ -1743,7 +1774,7 @@ def _value_comparison_markup(
         book = quote.sportsbook.name
         is_best = quote.sportsbook.id == opportunity.quote.sportsbook.id
         if is_best:
-            role = "Best offer · excluded from own consensus"
+            role = "Best offer · not used in its own comparison"
         elif book in opportunity.reference_sportsbooks:
             role = "Consensus contributor"
         else:
@@ -1761,7 +1792,7 @@ def _value_comparison_markup(
         )
     contributors = html.escape(", ".join(opportunity.reference_sportsbooks))
     contributor_markup = (
-        '<div class="ev-detail-metric">No-vig consensus contributors'
+        '<div class="ev-detail-metric">Sportsbooks used for the consensus estimate'
         f"<strong>{contributors}</strong></div>"
     )
     return (
