@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import html
 import json
 import os
 from datetime import UTC, datetime, timedelta
@@ -232,6 +233,43 @@ def _inject_theme() -> None:
         .demo-badge { background:#382a12; color:#ffd180; border-color:#785c24; }
         .section-kicker { color:#8290a8; text-transform:uppercase; letter-spacing:.12em;
             font-size:.72rem; font-weight:700; margin-bottom:.2rem; }
+        .st-key-top_opportunity {
+            background:
+                radial-gradient(circle at 88% 5%, rgba(57,217,138,.16), transparent 34%),
+                linear-gradient(145deg, #101a2b 0%, #0b121f 58%, #0c1718 100%);
+            border: 1px solid #2b8a60 !important;
+            border-radius: 16px;
+            padding: 1rem 1.15rem 1.1rem;
+            box-shadow: 0 14px 38px rgba(0,0,0,.28), inset 0 1px rgba(255,255,255,.03);
+            margin: .45rem 0 1rem;
+        }
+        .st-key-top_opportunity .best-bet-badge {
+            display:inline-flex; align-items:center; padding:4px 9px; border-radius:999px;
+            background:#153d2d; border:1px solid #2a8a5d; color:#77efb2;
+            font-size:.7rem; font-weight:800; letter-spacing:.12em; margin-bottom:.45rem;
+        }
+        .st-key-top_opportunity .best-bet-pick {
+            color:#f8fafc; font-size:1.65rem; line-height:1.12; font-weight:850;
+            letter-spacing:-.035em; margin:.05rem 0 .28rem;
+        }
+        .st-key-top_opportunity .best-bet-event {
+            color:#aeb9ca; font-size:.92rem; margin-bottom:.25rem;
+        }
+        .st-key-top_opportunity div[data-testid="stMetric"] {
+            background:rgba(7,11,18,.55); border-color:#2a394f; min-height:86px;
+        }
+        .st-key-top_opportunity [data-testid="stLinkButton"] a {
+            min-height:54px; font-size:1rem; font-weight:850; letter-spacing:.01em;
+            background:#22c55e !important; border-color:#39d98a !important;
+            color:#04110a !important;
+            box-shadow:0 8px 24px rgba(57,217,138,.22);
+        }
+        .st-key-top_opportunity [data-testid="stLinkButton"] a:hover {
+            background:#39d98a !important; border-color:#6ee7b7 !important;
+        }
+        .st-key-top_opportunity .best-bet-proof {
+            color:#8f9db1; font-size:.78rem; padding-top:.1rem;
+        }
         .risk-note { color:#94a3b8; font-size:.78rem; }
         .stDataFrame { border: 1px solid #202b3d; border-radius: 8px; overflow:hidden; }
         [data-testid="stExpander"] { border-color: #202b3d; background: #0b111c; }
@@ -297,8 +335,15 @@ def _market_label(market: MarketKey) -> str:
     return label
 
 
-def _selection_label(quote: Quote) -> str:
+def _selection_label(quote: Quote, event: Event | None = None) -> str:
     side = quote.outcome.side.value.title()
+    if event is not None:
+        if quote.outcome.side is OutcomeSide.HOME:
+            side = event.home.name
+        elif quote.outcome.side is OutcomeSide.AWAY:
+            side = event.away.name
+        elif quote.outcome.side is OutcomeSide.DRAW:
+            side = "Draw"
     market = quote.outcome.market
     if market.kind is MarketKind.SPREAD and market.line is not None:
         line = market.line if quote.outcome.side is OutcomeSide.HOME else -market.line
@@ -840,46 +885,81 @@ def _render_priority_value_bets(
 
     top = qualifying[0]
     event = event_map.get(top.quote.outcome.market.event_id)
-    st.markdown('<div class="section-kicker">Top opportunity</div>', unsafe_allow_html=True)
-    st.markdown(
-        f"**{event.name if event else top.quote.outcome.market.event_id} — "
-        f"{_selection_label(top.quote)} · {_market_label(top.quote.outcome.market)}**"
+    event_name = event.name if event else top.quote.outcome.market.event_id
+    selection = _selection_label(top.quote, event)
+    market_label = _market_label(top.quote.outcome.market)
+    pick_label = (
+        f"{selection} MONEYLINE"
+        if top.quote.outcome.market.kind is MarketKind.MONEYLINE
+        else selection
     )
-    metrics = st.columns(4)
-    metrics[0].metric(
-        "Sportsbook",
-        top.quote.sportsbook.name,
-        help="The sportsbook offering the recommended price.",
-    )
-    metrics[1].metric(
-        "Offered odds",
-        format_odds(top.quote.decimal_odds, odds_format),
-        help="The actual price currently offered by PlayNow or Betway.",
-    )
-    metrics[2].metric(
-        "Estimated edge",
-        f"{top.expected_value:.2%}",
-        help="Estimated long-run return relative to the consensus fair probability.",
-    )
-    metrics[3].metric(
-        "Consensus fair odds",
-        format_odds(top.fair_odds, odds_format),
-        help=(
-            "A margin-free estimate derived from the other enabled sportsbooks. It is not an "
-            "offered betting price."
-        ),
-    )
+    offered_odds = format_odds(top.quote.decimal_odds, odds_format)
     sportsbook_url = SPORTSBOOK_URLS.get(top.quote.sportsbook.name)
-    if sportsbook_url:
-        action_column, _ = st.columns([1, 3])
-        with action_column:
-            st.link_button(
-                f"Bet now at {top.quote.sportsbook.name}",
-                sportsbook_url,
-                type="primary",
-                icon=":material/open_in_new:",
-                width="stretch",
+    with st.container(border=True, key="top_opportunity"):
+        recommendation_column, action_column = st.columns(
+            [3.2, 1.25], vertical_alignment="center"
+        )
+        with recommendation_column:
+            st.markdown('<div class="best-bet-badge">★ #1 BEST BET</div>', unsafe_allow_html=True)
+            st.markdown(
+                f'<div class="best-bet-pick">BET {html.escape(pick_label.upper())}</div>',
+                unsafe_allow_html=True,
             )
+            event_detail = f"{event_name} · {market_label}"
+            if event is not None:
+                event_detail += (
+                    f" · {event.league_id.upper()} · "
+                    f"{event.start_time.astimezone().strftime('%a %b %d, %I:%M %p')}"
+                )
+            st.markdown(
+                f'<div class="best-bet-event">{html.escape(event_detail)}</div>',
+                unsafe_allow_html=True,
+            )
+        with action_column:
+            st.caption("BEST AVAILABLE PRICE")
+            st.markdown(f"**{top.quote.sportsbook.name} · {offered_odds}**")
+            if sportsbook_url:
+                st.link_button(
+                    f"Bet now on {top.quote.sportsbook.name} · {offered_odds}",
+                    sportsbook_url,
+                    type="primary",
+                    icon=":material/open_in_new:",
+                    width="stretch",
+                )
+
+        metrics = st.columns(4)
+        metrics[0].metric(
+            "Bet at",
+            top.quote.sportsbook.name,
+            help="The sportsbook offering the recommended price.",
+        )
+        metrics[1].metric(
+            "Offered odds",
+            offered_odds,
+            help="The actual price currently offered by PlayNow or Betway.",
+        )
+        metrics[2].metric(
+            "Estimated edge",
+            f"{top.expected_value:.2%}",
+            help="Estimated long-run return relative to the consensus fair probability.",
+        )
+        metrics[3].metric(
+            "Consensus fair odds",
+            format_odds(top.fair_odds, odds_format),
+            help=(
+                "A margin-free estimate derived from the other enabled sportsbooks. It is not "
+                "an offered betting price."
+            ),
+        )
+        st.markdown(
+            '<div class="best-bet-proof">'
+            f"Compared with {html.escape(', '.join(top.reference_sportsbooks))} · "
+            f"Price updated {_age_label(top.quote, as_of)} ago · Confirm the price before betting"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+
+    st.markdown("#### More +EV opportunities")
     rows = [
         {
             "#": rank,
@@ -889,7 +969,10 @@ def _render_priority_value_bets(
                 else item.quote.outcome.market.event_id
             ),
             "Market": _market_label(item.quote.outcome.market),
-            "Bet": _selection_label(item.quote),
+            "Bet": _selection_label(
+                item.quote,
+                event_map.get(item.quote.outcome.market.event_id),
+            ),
             "Bet at": item.quote.sportsbook.name,
             "Book odds": format_odds(item.quote.decimal_odds, odds_format),
             "Fair odds": format_odds(item.fair_odds, odds_format),
