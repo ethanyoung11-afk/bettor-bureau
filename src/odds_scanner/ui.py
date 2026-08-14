@@ -459,6 +459,27 @@ def _inject_theme() -> None:
         }
         .value-bet-event { color:#a7b3c4; font-size:.84rem; }
         .value-bet-proof { color:#8492a6; font-size:.76rem; padding-top:.15rem; }
+        .recommended-card-badge {
+            color:#39df83; font-size:.7rem; font-weight:850; letter-spacing:.05em;
+            text-transform:uppercase; margin:.2rem 0 .35rem;
+        }
+        .recommended-card-grid {
+            display:grid; grid-template-columns:1fr 1fr 1fr; gap:.5rem;
+            margin:.65rem 0 .55rem;
+        }
+        .recommended-card-metric {
+            background:#0a121d; border:1px solid #253348; border-radius:9px;
+            padding:.5rem .55rem; min-width:0;
+        }
+        .recommended-card-metric small {
+            display:block; color:#8794a7; font-size:.61rem; text-transform:uppercase;
+            letter-spacing:.04em; margin-bottom:.2rem;
+        }
+        .recommended-card-metric strong {
+            display:block; color:#e8edf4; font-size:1rem; white-space:nowrap;
+            overflow:hidden; text-overflow:ellipsis;
+        }
+        .recommended-card-metric strong.positive { color:#39df83; }
         .risk-note { color:#94a3b8; font-size:.78rem; }
         .stDataFrame { border: 1px solid #202b3d; border-radius: 8px; overflow:hidden; }
         [data-testid="stExpander"] { border-color: #202b3d; background: #0b111c; }
@@ -1816,6 +1837,64 @@ def _render_ev_summary(
     )
 
 
+def _render_recommended_value_card(
+    opportunity: ValueOpportunity,
+    rank: int,
+    event_map: dict[str, Event],
+    quotes: tuple[Quote, ...],
+    odds_format: str,
+    as_of: datetime,
+) -> None:
+    event = event_map.get(opportunity.quote.outcome.market.event_id)
+    selection = _selection_label(opportunity.quote, event)
+    market_label = _market_label(opportunity.quote.outcome.market)
+    offered_odds = format_odds(opportunity.quote.decimal_odds, odds_format)
+    fair_odds = format_odds(opportunity.fair_odds, odds_format)
+    sportsbook = opportunity.quote.sportsbook.name
+    sportsbook_url = SPORTSBOOK_URLS.get(sportsbook)
+    card_key = stable_id(
+        "recommended-card",
+        rank,
+        opportunity.quote.sportsbook.id,
+        opportunity.quote.outcome.id,
+    )
+    with st.container(border=True, key=f"value_opportunity_{card_key}"):
+        st.markdown(
+            f'<div class="recommended-card-badge">#{rank} Recommended bet</div>'
+            f'<div class="value-bet-pick">{html.escape(selection)}</div>'
+            f'<div class="value-bet-event">{html.escape(event.name) if event else "Event"} · '
+            f"{html.escape(market_label)}"
+            + (
+                f" · {event.start_time.astimezone().strftime('%a %b %d, %I:%M %p')}"
+                if event
+                else ""
+            )
+            + "</div>"
+            '<div class="recommended-card-grid">'
+            '<div class="recommended-card-metric"><small>Bet at</small>'
+            f'<strong>{html.escape(sportsbook)}</strong></div>'
+            '<div class="recommended-card-metric"><small>Best odds</small>'
+            f'<strong class="positive">{offered_odds}</strong></div>'
+            '<div class="recommended-card-metric"><small>Estimated EV</small>'
+            f'<strong class="positive">{_format_edge(opportunity.expected_value)}</strong></div>'
+            "</div>"
+            f'<div class="value-bet-proof">Fair odds {fair_odds} · '
+            f"{opportunity.reference_books}-book consensus · "
+            f"{_recommendation_freshness(opportunity.quote, as_of)}</div>",
+            unsafe_allow_html=True,
+        )
+        if sportsbook_url:
+            st.link_button(
+                f"Bet {offered_odds} on {sportsbook}",
+                sportsbook_url,
+                type="primary",
+                icon=":material/open_in_new:",
+                width="stretch",
+            )
+        with st.expander("View odds comparison", expanded=False):
+            _render_value_comparison(opportunity, quotes, odds_format, as_of)
+
+
 def _render_priority_value_bets(
     values: tuple[ValueOpportunity, ...],
     event_map: dict[str, Event],
@@ -1833,7 +1912,16 @@ def _render_priority_value_bets(
         st.button("Clear filters", on_click=_reset_ev_filters, type="primary")
         return
 
-    top = max(values, key=lambda item: item.expected_value)
+    ranked_values = tuple(
+        sorted(values, key=lambda item: item.expected_value, reverse=True)
+    )
+    recommended = ranked_values[:3]
+    st.markdown(
+        f'<div class="ev-list-title">Recommended Bets '
+        f'<span class="ev-count-badge">{len(recommended)}</span></div>',
+        unsafe_allow_html=True,
+    )
+    top = recommended[0]
     event = event_map.get(top.quote.outcome.market.event_id)
     selection = _selection_label(top.quote, event)
     market_label = _market_label(top.quote.outcome.market)
@@ -1935,17 +2023,30 @@ def _render_priority_value_bets(
         with st.expander("View comparison", expanded=False):
             _render_value_comparison(top, quotes, odds_format, as_of)
 
+    if len(recommended) > 1:
+        recommended_columns = st.columns(len(recommended) - 1)
+        for index, opportunity in enumerate(recommended[1:], start=2):
+            with recommended_columns[index - 2]:
+                _render_recommended_value_card(
+                    opportunity,
+                    index,
+                    event_map,
+                    quotes,
+                    odds_format,
+                    as_of,
+                )
+
     ev_rank = {
         item.quote.outcome.id: rank
         for rank, item in enumerate(
-            sorted(values, key=lambda candidate: candidate.expected_value, reverse=True),
+            ranked_values,
             start=1,
         )
     }
-    remaining = tuple(item for item in values if item.quote.outcome.id != top.quote.outcome.id)
+    remaining = ranked_values[len(recommended) :]
     st.markdown(
-        f'<div class="ev-list-title">All +EV Bets '
-        f'<span class="ev-count-badge">{len(values)}</span></div>',
+        f'<div class="ev-list-title">More +EV Bets '
+        f'<span class="ev-count-badge">{len(remaining)}</span></div>',
         unsafe_allow_html=True,
     )
     if not remaining:
