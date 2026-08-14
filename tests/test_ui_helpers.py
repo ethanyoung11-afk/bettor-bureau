@@ -1,9 +1,18 @@
+from datetime import timedelta
+from decimal import Decimal
+
+from odds_scanner.analytics import detect_consensus_value
+from odds_scanner.opportunities import deduplicate_quotes, implied_probability
 from odds_scanner.providers.demo import generate_demo_snapshots
 from odds_scanner.ui import (
     SPORTSBOOK_URLS,
     STARTER_BOOKS,
+    EVFilterState,
+    _best_value_by_outcome,
     _event_odds_frame,
+    _filter_value_opportunities,
     _market_label,
+    _market_range_label,
     _password_matches,
     _selection_label,
 )
@@ -68,3 +77,59 @@ def test_player_prop_labels_name_the_player_stat_and_line(now):
     selection = _selection_label(quote)
     assert quote.outcome.market.variant in selection
     assert str(quote.outcome.market.line) in selection
+
+
+def test_ev_board_keeps_one_best_offer_per_bet_and_filters_implied_probability(now):
+    snapshots = generate_demo_snapshots(now)
+    quotes = deduplicate_quotes(quote for snapshot in snapshots for quote in snapshot.quotes)
+    values = detect_consensus_value(
+        quotes,
+        as_of=now,
+        max_age=timedelta(minutes=5),
+        minimum_ev=Decimal("0"),
+    )
+    events = {event.id: event for event in snapshots[-1].events}
+    filters = EVFilterState(
+        league_id=None,
+        market_kind=None,
+        minimum_ev=Decimal("0"),
+        my_books=(),
+        minimum_implied_probability=Decimal("0.30"),
+        minimum_american_odds=None,
+        maximum_american_odds=None,
+        minimum_consensus_books=2,
+        starts_before=None,
+        fresh_only=False,
+        sort_by="EV % (High to Low)",
+    )
+
+    filtered = _filter_value_opportunities(
+        values,
+        events,
+        filters,
+        as_of=now,
+        max_age=timedelta(minutes=5),
+    )
+
+    assert filtered
+    assert len({item.quote.outcome.id for item in filtered}) == len(filtered)
+    assert all(implied_probability(item.quote.decimal_odds) >= Decimal("0.30") for item in filtered)
+    assert tuple(item.expected_value for item in filtered) == tuple(
+        sorted((item.expected_value for item in filtered), reverse=True)
+    )
+    assert len(_best_value_by_outcome(values)) <= len(values)
+
+
+def test_market_range_uses_actual_offered_prices(now):
+    snapshots = generate_demo_snapshots(now)
+    quotes = deduplicate_quotes(quote for snapshot in snapshots for quote in snapshot.quotes)
+    opportunity = detect_consensus_value(
+        quotes,
+        as_of=now,
+        max_age=timedelta(minutes=5),
+        minimum_ev=Decimal("0"),
+    )[0]
+
+    label = _market_range_label(opportunity, quotes, "American")
+
+    assert " to " in label

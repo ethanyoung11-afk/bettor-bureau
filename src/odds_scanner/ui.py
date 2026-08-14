@@ -5,6 +5,7 @@ import hmac
 import html
 import json
 import os
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from functools import lru_cache
@@ -31,8 +32,14 @@ from odds_scanner.domain import (
     TrackedBet,
     stable_id,
 )
-from odds_scanner.opportunities import best_prices, detect_arbitrage, is_fresh
-from odds_scanner.presentation import format_odds
+from odds_scanner.opportunities import (
+    best_prices,
+    deduplicate_quotes,
+    detect_arbitrage,
+    implied_probability,
+    is_fresh,
+)
+from odds_scanner.presentation import decimal_to_american, format_odds
 from odds_scanner.providers.base import OddsProvider
 from odds_scanner.providers.demo import DemoOddsProvider, generate_demo_snapshots
 from odds_scanner.providers.odds_api import FOOTBALL_LEAGUES, OddsApiError, OddsApiProvider
@@ -97,6 +104,21 @@ MARKET_NAMES = {
     MarketKind.PLAYER_PROP: "Player prop",
 }
 LEAGUE_ICONS = {"NFL": "🏈", "NCAAF": "🏈", "CFL": "🏈"}
+
+
+@dataclass(frozen=True, slots=True)
+class EVFilterState:
+    league_id: str | None
+    market_kind: MarketKind | None
+    minimum_ev: Decimal
+    my_books: tuple[str, ...]
+    minimum_implied_probability: Decimal
+    minimum_american_odds: int | None
+    maximum_american_odds: int | None
+    minimum_consensus_books: int
+    starts_before: datetime | None
+    fresh_only: bool
+    sort_by: str
 
 
 def _provider_id(mode: str) -> str:
@@ -365,13 +387,168 @@ def _inject_theme() -> None:
         [data-testid="stButtonGroup"] button[data-variant="pills"][aria-pressed="false"]:hover {
             border-color: #39d98a !important; color: #9af0c7 !important;
         }
+        .ev-page-subtitle { color:#b4bfce; font-size:.94rem; margin-top:-.15rem; }
+        .ev-update-status { color:#a7b2c2; font-size:.82rem; text-align:right; line-height:1.45; }
+        .ev-update-status strong { color:#d6dde8; font-weight:700; }
+        .st-key-ev_filter_bar {
+            background:#0a111c; border:1px solid #1e2b3d; border-radius:12px;
+            padding:.65rem .75rem .35rem; margin:.55rem 0 .45rem;
+        }
+        .st-key-ev_filter_bar [data-testid="stWidgetLabel"] p {
+            color:#8997aa; font-size:.7rem; text-transform:uppercase; letter-spacing:.08em;
+            font-weight:750;
+        }
+        .st-key-ev_filter_bar [data-baseweb="select"] > div,
+        .st-key-ev_filter_bar [data-testid="stPopover"] button {
+            background:#0e1825; border-color:#29374a; min-height:41px;
+        }
+        .ev-filter-chips { display:flex; flex-wrap:wrap; gap:7px; margin:.15rem 0 .15rem; }
+        .ev-filter-chip {
+            display:inline-flex; align-items:center; padding:5px 9px; border-radius:6px;
+            color:#c4cedc; background:#142031; border:1px solid #26364b; font-size:.76rem;
+        }
+        .ev-summary-line {
+            display:flex; gap:1rem; flex-wrap:wrap; color:#8f9caf; font-size:.78rem;
+            padding:.1rem .15rem .5rem;
+        }
+        .ev-summary-line strong { color:#e4e9f0; }
+        .st-key-top_opportunity {
+            background:#0b1521;
+            border:1px solid #24c96b !important;
+            border-radius:12px; padding:.9rem 1rem .85rem;
+            box-shadow:0 10px 30px rgba(0,0,0,.2); margin:.35rem 0 .75rem;
+        }
+        .st-key-top_opportunity .best-bet-badge {
+            display:inline-flex; padding:4px 9px; border-radius:999px;
+            background:#0d3425; color:#39e785; font-size:.7rem; font-weight:850;
+            letter-spacing:.04em; margin-bottom:.55rem;
+        }
+        .st-key-top_opportunity .best-bet-pick {
+            color:#f7f9fc; font-size:1.45rem; line-height:1.12; font-weight:850;
+            letter-spacing:-.025em; margin-bottom:.2rem;
+        }
+        .st-key-top_opportunity .best-bet-opponent { color:#d1d8e2; font-size:.93rem; }
+        .st-key-top_opportunity .best-bet-event {
+            color:#94a2b5; font-size:.78rem; margin-top:.3rem;
+        }
+        .st-key-top_opportunity div[data-testid="stMetric"] {
+            background:transparent; border:0; border-left:1px solid #2a3747;
+            border-radius:0; min-height:88px; padding:.35rem .8rem;
+        }
+        .st-key-top_opportunity div[data-testid="stMetricValue"] { font-size:1.65rem; }
+        .ev-featured-metrics {
+            display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); align-items:stretch;
+        }
+        .ev-featured-metric {
+            min-width:0; border-left:1px solid #2a3747; padding:.25rem .65rem;
+            text-align:center;
+        }
+        .ev-featured-label {
+            color:#c1cad7; font-size:.7rem; white-space:nowrap; margin-bottom:.45rem;
+        }
+        .ev-featured-info { color:#8997aa; cursor:help; margin-left:3px; }
+        .ev-featured-value {
+            color:#c8d0dc; font-size:1.35rem; font-weight:800; white-space:nowrap;
+            letter-spacing:-.02em;
+        }
+        .ev-featured-value.positive { color:#39df83; }
+        .ev-featured-sub {
+            color:#8d9aac; font-size:.65rem; margin-top:.35rem; white-space:nowrap;
+            overflow:hidden; text-overflow:ellipsis;
+        }
+        .st-key-top_opportunity [data-testid="stLinkButton"] a {
+            min-height:48px; font-size:.92rem; font-weight:850; background:#22c55e !important;
+            border-color:#39d98a !important; color:#04110a !important; box-shadow:none;
+        }
+        .best-bet-support {
+            border-top:1px solid #293647; margin-top:.55rem; padding-top:.65rem;
+            color:#a5b1c1; font-size:.77rem; display:flex; flex-wrap:wrap; gap:1.2rem;
+        }
+        .ev-table-wrap {
+            border:1px solid #202e40; border-radius:10px; overflow:hidden;
+            background:#0a131f; margin-top:.35rem;
+        }
+        .ev-grid {
+            display:grid; grid-template-columns:42px minmax(250px,2.3fr) minmax(100px,.9fr)
+            minmax(92px,.8fr) minmax(100px,.85fr) minmax(90px,.8fr) minmax(80px,.65fr)
+            minmax(90px,.75fr) minmax(110px,.9fr) minmax(95px,.75fr) minmax(90px,.7fr) 24px;
+            align-items:center; column-gap:12px;
+        }
+        .ev-table-head {
+            padding:.58rem .7rem; color:#8997aa; font-size:.66rem; text-transform:uppercase;
+            letter-spacing:.06em; border-bottom:1px solid #253346; font-weight:750;
+        }
+        .ev-table-row { border-bottom:1px solid #1d2a3a; }
+        .ev-table-row:last-child { border-bottom:0; }
+        .ev-table-row summary {
+            list-style:none; cursor:pointer; padding:.65rem .7rem; transition:background .15s ease;
+        }
+        .ev-table-row summary::-webkit-details-marker { display:none; }
+        .ev-table-row summary:hover { background:#0e1b2a; }
+        .ev-table-row[open] summary { background:#0e1b2a; border-bottom:1px solid #253346; }
+        .ev-rank,.ev-positive { color:#39df83; font-weight:850; }
+        .ev-matchup strong { color:#f1f5f9; font-size:.84rem; display:block; }
+        .ev-matchup span,.ev-cell-sub {
+            color:#8e9bad; font-size:.68rem; display:block; margin-top:2px;
+        }
+        .ev-cell-main { color:#dbe2eb; font-size:.82rem; }
+        .ev-odds { color:#39df83; font-weight:850; font-size:1rem; }
+        .ev-action {
+            display:inline-flex; justify-content:center; padding:6px 9px; border:1px solid #1a9c55;
+            color:#36df7e !important; border-radius:6px; text-decoration:none !important;
+            font-size:.73rem; font-weight:800; white-space:nowrap;
+        }
+        .ev-chevron { color:#8794a6; font-size:1.05rem; }
+        details[open] .ev-chevron { transform:rotate(180deg); }
+        .ev-details { padding:.75rem 1rem .85rem; background:#08111b; }
+        .ev-details-metrics { display:flex; flex-wrap:wrap; gap:1rem; margin-bottom:.65rem; }
+        .ev-detail-metric { color:#8f9caf; font-size:.72rem; }
+        .ev-detail-metric strong { color:#e4eaf2; display:block; font-size:.84rem; margin-top:2px; }
+        .ev-book-prices { display:flex; flex-wrap:wrap; gap:7px; }
+        .ev-book-price {
+            min-width:128px; border:1px solid #233247; border-radius:7px; padding:7px 9px;
+            background:#0d1826; color:#a7b4c5; font-size:.68rem;
+        }
+        .ev-book-price strong { display:block; color:#eef2f7; font-size:.79rem; margin-bottom:2px; }
+        .ev-book-price.best { border-color:#1f9f59; background:#0d2119; }
+        .ev-book-price a { color:#39df83; text-decoration:none; }
+        .ev-empty {
+            text-align:center; padding:2.25rem 1rem; border:1px dashed #2a394d; border-radius:10px;
+            background:#0a121e; color:#8f9caf;
+        }
+        .ev-empty strong { display:block; color:#eef2f7; font-size:1.05rem; margin-bottom:.35rem; }
+        .ev-list-title {
+            color:#f2f6fa; font-size:1.05rem; font-weight:850; margin:.9rem .15rem .4rem;
+        }
+        .ev-count-badge {
+            display:inline-flex; margin-left:7px; padding:2px 8px; border-radius:999px;
+            background:#0d3425; color:#39df83; font-size:.75rem; vertical-align:middle;
+        }
+        @media (max-width: 1450px) {
+            .ev-grid {
+                grid-template-columns:38px minmax(220px,2fr) 100px 90px 90px
+                80px 95px 90px 24px;
+            }
+            .ev-fair,.ev-consensus,.ev-range { display:none; }
+        }
+        @media (max-width: 760px) {
+            .block-container { padding:.6rem .75rem 1.2rem; }
+            .ev-grid {
+                grid-template-columns:34px minmax(150px,2fr) 72px 70px 70px 74px 22px;
+                column-gap:7px;
+            }
+            .ev-market,.ev-fair,.ev-consensus,.ev-range,.ev-best-book { display:none; }
+            .ev-table-head { font-size:.58rem; }
+            .ev-table-row summary { padding:.6rem .5rem; }
+            .ev-featured-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); gap:.55rem 0; }
+        }
         </style>
         """,
         unsafe_allow_html=True,
     )
 
 
-def _render_page_header(mode: str) -> tuple[list[str], Any, Any]:
+def _render_page_header(mode: str) -> Any:
     badge_class = "demo-badge" if mode == "Demo" else "terminal-badge"
     badge_text = (
         "DEMO MARKET"
@@ -386,23 +563,15 @@ def _render_page_header(mode: str) -> tuple[list[str], Any, Any]:
             f'<span class="terminal-badge {badge_class}">{badge_text}</span>',
             unsafe_allow_html=True,
         )
-        st.title("Advantage Betting Terminal")
-        st.caption("Your sportsbooks versus the market — with secondary arbitrage tools")
+        st.title("+EV Bets")
+        st.markdown(
+            '<div class="ev-page-subtitle">Positive expected value bets based on our no-vig '
+            "market consensus.</div>",
+            unsafe_allow_html=True,
+        )
     with status_column:
         status_container = st.container(key="header_odds_status")
-    dashboard_container = st.container(key="header_dashboard")
-    filter_label, filter_control = st.columns([1.1, 5])
-    filter_label.markdown("**🏈 Football leagues**")
-    selected = filter_control.pills(
-        "Football leagues",
-        list(LEAGUE_ICONS),
-        selection_mode="multi",
-        default=list(LEAGUE_ICONS),
-        format_func=lambda league: f"{LEAGUE_ICONS[league]} {league}",
-        key="top_league_filter",
-        label_visibility="collapsed",
-    )
-    return list(selected or LEAGUE_ICONS), status_container, dashboard_container
+    return status_container
 
 
 def _render_header_dashboard(
@@ -484,17 +653,24 @@ def _render_odds_status(
 ) -> None:
     target = container if container is not None else st
     if not quotes:
-        target.info("No saved odds are available yet. Use Refresh latest odds to load the board.")
+        target.markdown(
+            '<div class="ev-update-status"><strong>No saved odds</strong><br>'
+            "Use Refresh latest odds</div>",
+            unsafe_allow_html=True,
+        )
         return
     last_refresh = max(quote.observed_at for quote in quotes)
-    timestamp = last_refresh.astimezone().strftime("%a %b %d at %I:%M:%S %p")
     age = _elapsed_label(last_refresh, as_of)
     if len(fresh_quotes) == len(quotes):
-        target.success(f"FRESH ODDS · Last refreshed {timestamp} ({age})", icon="✅")
+        state = "Fresh"
     elif fresh_quotes:
-        target.warning(f"PARTLY STALE ODDS · Last refreshed {timestamp} ({age})", icon="⚠️")
+        state = "Partly stale"
     else:
-        target.warning(f"STALE ODDS · Last refreshed {timestamp} ({age})", icon="⚠️")
+        state = "Stale"
+    target.markdown(
+        f'<div class="ev-update-status">Last updated: <strong>{age}</strong> ↻<br>{state}</div>',
+        unsafe_allow_html=True,
+    )
 
 
 def _load_defaults(repository: QuoteRepository) -> None:
@@ -518,7 +694,6 @@ def _seed_demo(repository: QuoteRepository) -> None:
 
 def _sidebar(
     repository: QuoteRepository,
-    available_books: list[str],
     *,
     is_admin: bool,
 ) -> dict[str, Any]:
@@ -595,31 +770,9 @@ def _sidebar(
             )
             odds_format = st.radio("Odds", ["American", "Decimal"], horizontal=True)
         active_leagues = list(LEAGUE_ICONS)
-        with st.expander("Markets", expanded=False):
-            market_options = ["Moneyline", "Spread", "Total"]
-            if data_mode in {"Demo", "OddsPapi Free"}:
-                market_options.append("Player props")
-            active_markets = st.multiselect(
-                "Markets",
-                market_options,
-                default=market_options,
-            )
-            if data_mode == "OddsPapi Free":
-                st.caption("Player props use the same refresh. Futures require a separate feed.")
-        with st.expander("My sportsbooks", expanded=False):
-            st.caption(
-                "Choose where you can place bets. Consensus still uses every available odds book."
-            )
-            my_books = [
-                book
-                for book in available_books
-                if st.toggle(
-                    f"★ {book}" if book in PRIORITY_BOOKS else book,
-                    value=True,
-                    key=f"my_sportsbook_{stable_id('ui-book-v3', data_mode, book)}",
-                )
-            ]
-            st.caption(f"{len(my_books)} selected for your recommendations.")
+        active_markets = ["Moneyline", "Spread", "Total"]
+        if data_mode in {"Demo", "OddsPapi Free"}:
+            active_markets.append("Player props")
         st.divider()
         refresh_label = {
             "Demo": "Refresh demo feed",
@@ -654,7 +807,6 @@ def _sidebar(
         "odds_format": odds_format,
         "active_leagues": active_leagues,
         "active_markets": active_markets,
-        "my_books": my_books,
         "refresh": refresh,
         "is_admin": is_admin,
     }
@@ -989,196 +1141,656 @@ def _render_event_board(
             _render_event_odds_matrix(event_quotes, sportsbook_names, odds_format, event)
 
 
+def _sportsbook_toggle_key(mode: str, book: str) -> str:
+    return f"my_sportsbook_{stable_id('ui-book-v3', mode, book)}"
+
+
+def _set_sportsbook_selection(books: tuple[str, ...], mode: str, enabled: bool) -> None:
+    for book in books:
+        st.session_state[_sportsbook_toggle_key(mode, book)] = enabled
+
+
+def _reset_ev_filters() -> None:
+    st.session_state["ev_sport_filter"] = "All Sports"
+    st.session_state["ev_market_filter"] = "All Markets"
+    st.session_state["ev_minimum_preset"] = "2%+"
+    st.session_state["ev_custom_minimum"] = 2.0
+    st.session_state["ev_implied_preset"] = "Any"
+    st.session_state["ev_custom_implied"] = 0.0
+    st.session_state["ev_odds_range_enabled"] = False
+    st.session_state["ev_min_american"] = -200
+    st.session_state["ev_max_american"] = 300
+    st.session_state["ev_consensus_books"] = "Any"
+    st.session_state["ev_start_window"] = "Any time"
+    st.session_state["ev_freshness_filter"] = "Include stale"
+    st.session_state["ev_sort_by"] = "EV % (High to Low)"
+
+
+def _render_ev_filter_bar(
+    available_books: list[str],
+    mode: str,
+    events: tuple[Event, ...],
+    quotes: tuple[Quote, ...],
+    as_of: datetime,
+) -> EVFilterState:
+    st.session_state.setdefault("ev_custom_minimum", float(st.session_state["min_ev"]))
+    st.session_state.setdefault("ev_custom_implied", 0.0)
+    st.session_state.setdefault("ev_odds_range_enabled", False)
+    st.session_state.setdefault("ev_min_american", -200)
+    st.session_state.setdefault("ev_max_american", 300)
+    league_ids = sorted({event.league_id for event in events})
+    league_options = ["All Sports", *(league_id.upper() for league_id in league_ids)]
+    available_kinds = {quote.outcome.market.kind for quote in quotes}
+    market_options = [
+        "All Markets",
+        *(
+            MARKET_NAMES[kind]
+            for kind in (
+                MarketKind.MONEYLINE,
+                MarketKind.SPREAD,
+                MarketKind.TOTAL,
+                MarketKind.PLAYER_PROP,
+            )
+            if kind in available_kinds
+        ),
+    ]
+    preset_options = ["Any positive EV", "1%+", "2%+", "3%+", "5%+", "Custom"]
+    st.session_state.setdefault(
+        "ev_minimum_preset",
+        f"{int(float(st.session_state['min_ev']))}%+"
+        if float(st.session_state["min_ev"]) in {1.0, 2.0, 3.0, 5.0}
+        else "Custom",
+    )
+
+    with st.container(key="ev_filter_bar"):
+        sport_col, market_col, ev_col, book_col, more_col, _, sort_col = st.columns(
+            [1.08, 1.05, 1.0, 1.25, 1.05, 1.65, 1.35], vertical_alignment="bottom"
+        )
+        sport = sport_col.selectbox(
+            "Sport",
+            league_options,
+            key="ev_sport_filter",
+        )
+        market = market_col.selectbox(
+            "Market",
+            market_options,
+            key="ev_market_filter",
+        )
+        minimum_preset = ev_col.selectbox(
+            "Minimum EV",
+            preset_options,
+            key="ev_minimum_preset",
+        )
+
+        selected_before = tuple(
+            book
+            for book in available_books
+            if bool(st.session_state.get(_sportsbook_toggle_key(mode, book), True))
+        )
+        book_count = str(len(selected_before)) if selected_before else "All"
+        with book_col.popover(f"My Sportsbooks ({book_count})", width="stretch"):
+            st.caption(
+                "Only these books can be recommended. All available books still inform consensus."
+            )
+            for book in available_books:
+                st.toggle(
+                    f"★ {book}" if book in PRIORITY_BOOKS else book,
+                    value=True,
+                    key=_sportsbook_toggle_key(mode, book),
+                )
+            action_columns = st.columns(2)
+            action_columns[0].button(
+                "Select all",
+                on_click=_set_sportsbook_selection,
+                args=(tuple(available_books), mode, True),
+                width="stretch",
+            )
+            action_columns[1].button(
+                "Use all books",
+                on_click=_set_sportsbook_selection,
+                args=(tuple(available_books), mode, False),
+                width="stretch",
+                help="Clears the restriction so every eligible sportsbook may be recommended.",
+            )
+            st.caption("No selections means all eligible sportsbooks.")
+
+        with more_col.popover("More Filters", width="stretch"):
+            implied_preset = st.selectbox(
+                "Minimum implied probability",
+                ["Any", "10%+", "20%+", "30%+", "40%+", "50%+", "Custom"],
+                key="ev_implied_preset",
+                help=(
+                    "The break-even win probability represented by the offered odds. "
+                    "For example, +225 requires a 30.8% win rate to break even."
+                ),
+            )
+            if implied_preset == "Custom":
+                st.number_input(
+                    "Custom implied probability %",
+                    min_value=0.0,
+                    max_value=100.0,
+                    step=1.0,
+                    key="ev_custom_implied",
+                )
+            use_odds_range = st.toggle(
+                "Offered odds range",
+                key="ev_odds_range_enabled",
+            )
+            if use_odds_range:
+                odds_columns = st.columns(2)
+                odds_columns[0].number_input(
+                    "Minimum American odds",
+                    step=10,
+                    key="ev_min_american",
+                )
+                odds_columns[1].number_input(
+                    "Maximum American odds",
+                    step=10,
+                    key="ev_max_american",
+                )
+            consensus_preset = st.selectbox(
+                "Minimum consensus books",
+                ["Any", "3+", "4+", "5+", "6+", "7+"],
+                key="ev_consensus_books",
+            )
+            start_window = st.selectbox(
+                "Game start time",
+                ["Any time", "Next 6 hours", "Next 12 hours", "Next 24 hours", "Next 3 days"],
+                key="ev_start_window",
+            )
+            freshness_filter = st.selectbox(
+                "Price freshness",
+                ["Include stale", "Fresh only"],
+                key="ev_freshness_filter",
+            )
+            st.button(
+                "Reset secondary filters",
+                on_click=_reset_ev_filters,
+                width="stretch",
+            )
+
+        sort_by = sort_col.selectbox(
+            "Sort by",
+            [
+                "EV % (High to Low)",
+                "Starting Soon",
+                "Best Odds",
+                "Recently Updated",
+            ],
+            key="ev_sort_by",
+        )
+
+    if minimum_preset == "Custom":
+        custom_minimum = st.number_input(
+            "Custom minimum EV %",
+            min_value=0.0,
+            max_value=100.0,
+            step=0.25,
+            key="ev_custom_minimum",
+        )
+        minimum_ev = Decimal(str(custom_minimum)) / Decimal("100")
+    else:
+        minimum_ev = {
+            "Any positive EV": Decimal("0"),
+            "1%+": Decimal("0.01"),
+            "2%+": Decimal("0.02"),
+            "3%+": Decimal("0.03"),
+            "5%+": Decimal("0.05"),
+        }[minimum_preset]
+    st.session_state["min_ev"] = float(minimum_ev * Decimal("100"))
+
+    my_books = tuple(
+        book
+        for book in available_books
+        if bool(st.session_state.get(_sportsbook_toggle_key(mode, book), True))
+    )
+    implied_preset = str(st.session_state.get("ev_implied_preset", "Any"))
+    if implied_preset == "Custom":
+        implied_percent = Decimal(str(st.session_state.get("ev_custom_implied", 0.0)))
+    elif implied_preset == "Any":
+        implied_percent = Decimal("0")
+    else:
+        implied_percent = Decimal(implied_preset.rstrip("%+"))
+
+    use_odds_range = bool(st.session_state.get("ev_odds_range_enabled", False))
+    minimum_american = (
+        int(st.session_state.get("ev_min_american", -200)) if use_odds_range else None
+    )
+    maximum_american = (
+        int(st.session_state.get("ev_max_american", 300)) if use_odds_range else None
+    )
+    minimum_consensus = int(consensus_preset.rstrip("+")) if consensus_preset != "Any" else 2
+    starts_before = {
+        "Any time": None,
+        "Next 6 hours": as_of + timedelta(hours=6),
+        "Next 12 hours": as_of + timedelta(hours=12),
+        "Next 24 hours": as_of + timedelta(hours=24),
+        "Next 3 days": as_of + timedelta(days=3),
+    }[start_window]
+
+    chips: list[str] = []
+    if sport != "All Sports":
+        chips.append(sport)
+    if market != "All Markets":
+        chips.append(market)
+    if minimum_ev > 0:
+        chips.append(f"EV ≥ {minimum_ev:.0%}")
+    if implied_percent > 0:
+        chips.append(f"Implied Prob. ≥ {implied_percent}%")
+    if use_odds_range:
+        chips.append(f"Odds: {minimum_american:+d} to {maximum_american:+d}")
+    if consensus_preset != "Any":
+        chips.append(f"Consensus {consensus_preset}")
+    if start_window != "Any time":
+        chips.append(start_window)
+    if freshness_filter == "Fresh only":
+        chips.append("Fresh only")
+    if chips:
+        chip_markup = "".join(
+            f'<span class="ev-filter-chip">{html.escape(chip)}</span>' for chip in chips
+        )
+        chip_width = min(6.0, max(1.2, 1.35 * len(chips)))
+        chip_col, clear_col, _ = st.columns([chip_width, 1, 11 - chip_width])
+        chip_col.markdown(
+            f'<div class="ev-filter-chips">{chip_markup}</div>',
+            unsafe_allow_html=True,
+        )
+        clear_col.button(
+            "Clear all",
+            on_click=_reset_ev_filters,
+            type="tertiary",
+            width="stretch",
+        )
+
+    label_to_kind = {label: kind for kind, label in MARKET_NAMES.items()}
+    return EVFilterState(
+        league_id=None if sport == "All Sports" else sport.lower(),
+        market_kind=None if market == "All Markets" else label_to_kind[market],
+        minimum_ev=minimum_ev,
+        my_books=my_books,
+        minimum_implied_probability=implied_percent / Decimal("100"),
+        minimum_american_odds=minimum_american,
+        maximum_american_odds=maximum_american,
+        minimum_consensus_books=minimum_consensus,
+        starts_before=starts_before,
+        fresh_only=freshness_filter == "Fresh only",
+        sort_by=sort_by,
+    )
+
+
+def _best_value_by_outcome(
+    values: tuple[ValueOpportunity, ...],
+) -> tuple[ValueOpportunity, ...]:
+    selected: dict[str, ValueOpportunity] = {}
+    for item in values:
+        outcome_id = item.quote.outcome.id
+        current = selected.get(outcome_id)
+        if current is None or (
+            item.quote.decimal_odds,
+            item.expected_value,
+            item.quote.source_updated_at,
+        ) > (
+            current.quote.decimal_odds,
+            current.expected_value,
+            current.quote.source_updated_at,
+        ):
+            selected[outcome_id] = item
+    return tuple(selected.values())
+
+
+def _filter_value_opportunities(
+    values: tuple[ValueOpportunity, ...],
+    event_map: dict[str, Event],
+    filters: EVFilterState,
+    *,
+    as_of: datetime,
+    max_age: timedelta,
+) -> tuple[ValueOpportunity, ...]:
+    filtered: list[ValueOpportunity] = []
+    for item in _best_value_by_outcome(values):
+        event = event_map.get(item.quote.outcome.market.event_id)
+        if event is None:
+            continue
+        if filters.league_id is not None and event.league_id != filters.league_id:
+            continue
+        if (
+            filters.market_kind is not None
+            and item.quote.outcome.market.kind is not filters.market_kind
+        ):
+            continue
+        if item.expected_value <= 0 or item.expected_value < filters.minimum_ev:
+            continue
+        offered_probability = implied_probability(item.quote.decimal_odds)
+        if offered_probability < filters.minimum_implied_probability:
+            continue
+        american_odds = decimal_to_american(item.quote.decimal_odds)
+        if (
+            filters.minimum_american_odds is not None
+            and american_odds < filters.minimum_american_odds
+        ):
+            continue
+        if (
+            filters.maximum_american_odds is not None
+            and american_odds > filters.maximum_american_odds
+        ):
+            continue
+        if item.reference_books < filters.minimum_consensus_books:
+            continue
+        if filters.starts_before is not None and event.start_time > filters.starts_before:
+            continue
+        if filters.fresh_only and not is_fresh(item.quote, as_of=as_of, max_age=max_age):
+            continue
+        filtered.append(item)
+
+    if filters.sort_by == "Starting Soon":
+        filtered.sort(key=lambda item: event_map[item.quote.outcome.market.event_id].start_time)
+    elif filters.sort_by == "Best Odds":
+        filtered.sort(key=lambda item: item.quote.decimal_odds, reverse=True)
+    elif filters.sort_by == "Recently Updated":
+        filtered.sort(key=lambda item: item.quote.source_updated_at, reverse=True)
+    else:
+        filtered.sort(key=lambda item: item.expected_value, reverse=True)
+    return tuple(filtered)
+
+
+def _quotes_for_opportunity(
+    opportunity: ValueOpportunity,
+    quotes: tuple[Quote, ...],
+) -> tuple[Quote, ...]:
+    matching = tuple(
+        quote for quote in quotes if quote.outcome.id == opportunity.quote.outcome.id
+    )
+    return tuple(
+        sorted(
+            deduplicate_quotes(matching),
+            key=lambda quote: (quote.decimal_odds, quote.sportsbook.name),
+            reverse=True,
+        )
+    )
+
+
+def _market_range_label(
+    opportunity: ValueOpportunity,
+    quotes: tuple[Quote, ...],
+    odds_format: str,
+) -> str:
+    prices = [quote.decimal_odds for quote in _quotes_for_opportunity(opportunity, quotes)]
+    if not prices:
+        return "—"
+    return f"{format_odds(min(prices), odds_format)} to {format_odds(max(prices), odds_format)}"
+
+
+def _format_edge(value: Decimal) -> str:
+    return f"+{value:.2%}" if value >= 0 else f"{value:.2%}"
+
+
+def _render_ev_summary(
+    quotes: tuple[Quote, ...],
+    values: tuple[ValueOpportunity, ...],
+) -> None:
+    games = len({quote.outcome.market.event_id for quote in quotes})
+    books = len({quote.sportsbook.id for quote in quotes})
+    st.markdown(
+        '<div class="ev-summary-line">'
+        f"<span><strong>{len(values)}</strong> qualifying +EV bets</span>"
+        f"<span><strong>{games}</strong> upcoming games</span>"
+        f"<span><strong>{books}</strong> sportsbooks compared</span>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+
 def _render_priority_value_bets(
     values: tuple[ValueOpportunity, ...],
     event_map: dict[str, Event],
+    quotes: tuple[Quote, ...],
     odds_format: str,
     as_of: datetime,
-    my_books: tuple[str, ...],
 ) -> None:
-    st.markdown('<div class="section-kicker">Primary betting board</div>', unsafe_allow_html=True)
-    st.subheader("Best +EV bets for your sportsbooks")
-    minimum = Decimal(str(st.session_state["min_ev"])) / Decimal("100")
-    qualifying = tuple(item for item in values if item.expected_value >= minimum)
-    if not my_books:
-        st.info("Select at least one sportsbook under My sportsbooks.")
-        return
-    if not qualifying:
+    if not values:
+        st.markdown(
+            '<div class="ev-empty"><strong>No +EV bets match these filters.</strong>'
+            "Try lowering your minimum EV or implied-probability threshold, expanding your "
+            "sportsbook selection, or clearing some filters.</div>",
+            unsafe_allow_html=True,
+        )
+        st.button("Clear filters", on_click=_reset_ev_filters, type="primary")
         return
 
-    top = qualifying[0]
+    top = max(values, key=lambda item: item.expected_value)
     event = event_map.get(top.quote.outcome.market.event_id)
-    event_name = event.name if event else top.quote.outcome.market.event_id
     selection = _selection_label(top.quote, event)
     market_label = _market_label(top.quote.outcome.market)
-    pick_label = (
-        f"{selection} MONEYLINE"
-        if top.quote.outcome.market.kind is MarketKind.MONEYLINE
-        else selection
-    )
     offered_odds = format_odds(top.quote.decimal_odds, odds_format)
+    fair_odds = format_odds(top.fair_odds, odds_format)
+    offered_probability = implied_probability(top.quote.decimal_odds)
+    market_range = _market_range_label(top, quotes, odds_format)
     sportsbook_url = SPORTSBOOK_URLS.get(top.quote.sportsbook.name)
     with st.container(border=True, key="top_opportunity"):
-        recommendation_column, action_column = st.columns(
-            [3.2, 1.25], vertical_alignment="center"
+        identity_column, metrics_column, action_column = st.columns(
+            [2.6, 5.8, 2.35], vertical_alignment="center"
         )
-        with recommendation_column:
-            st.markdown('<div class="best-bet-badge">★ #1 BEST BET</div>', unsafe_allow_html=True)
+        with identity_column:
             st.markdown(
-                f'<div class="best-bet-pick">BET {html.escape(pick_label.upper())}</div>',
+                '<div class="best-bet-badge">🏆 #1 BEST OPPORTUNITY</div>',
                 unsafe_allow_html=True,
             )
-            event_detail = f"{event_name} · {market_label}"
-            if event is not None:
-                event_detail += (
-                    f" · {event.league_id.upper()} · "
-                    f"{event.start_time.astimezone().strftime('%a %b %d, %I:%M %p')}"
-                )
             st.markdown(
-                f'<div class="best-bet-event">{html.escape(event_detail)}</div>',
+                f'<div class="best-bet-pick">{html.escape(selection)}</div>',
+                unsafe_allow_html=True,
+            )
+            if event is not None:
+                if top.quote.outcome.side is OutcomeSide.HOME:
+                    opponent = f"vs {event.away.name}"
+                elif top.quote.outcome.side is OutcomeSide.AWAY:
+                    opponent = f"vs {event.home.name}"
+                else:
+                    opponent = event.name
+                st.markdown(
+                    f'<div class="best-bet-opponent">{html.escape(opponent)}</div>'
+                    f'<div class="best-bet-event">{event.league_id.upper()} · '
+                    f"{event.start_time.astimezone().strftime('%a %b %d, %I:%M %p')} · "
+                    f"{html.escape(market_label)}</div>",
+                    unsafe_allow_html=True,
+                )
+        with metrics_column:
+            st.markdown(
+                '<div class="ev-featured-metrics">'
+                '<div class="ev-featured-metric"><div class="ev-featured-label">EV '
+                '<span class="ev-featured-info" title="Estimated long-term return if this same '
+                'edge could be bet repeatedly.">ⓘ</span></div>'
+                f'<div class="ev-featured-value positive">{_format_edge(top.expected_value)}</div>'
+                '<div class="ev-featured-sub">Edge</div></div>'
+                '<div class="ev-featured-metric"><div class="ev-featured-label">Best Odds '
+                '<span class="ev-featured-info" title="Best price at an eligible sportsbook.">'
+                "ⓘ</span></div>"
+                f'<div class="ev-featured-value positive">{offered_odds}</div>'
+                f'<div class="ev-featured-sub">{html.escape(top.quote.sportsbook.name)}</div></div>'
+                '<div class="ev-featured-metric"><div class="ev-featured-label">Implied Prob. '
+                '<span class="ev-featured-info" title="Break-even win probability represented '
+                'by the offered odds.">ⓘ</span></div>'
+                f'<div class="ev-featured-value">{offered_probability:.1%}</div>'
+                '<div class="ev-featured-sub">Break-even</div></div>'
+                '<div class="ev-featured-metric"><div class="ev-featured-label">Fair Odds '
+                '<span class="ev-featured-info" title="Estimated fair price based on the no-vig '
+                'market consensus.">ⓘ</span></div>'
+                f'<div class="ev-featured-value">{fair_odds}</div>'
+                '<div class="ev-featured-sub">Consensus</div></div>'
+                '<div class="ev-featured-metric"><div class="ev-featured-label">Consensus '
+                '<span class="ev-featured-info" title="Sportsbooks contributing to this '
+                'opportunity’s no-vig fair price.">ⓘ</span></div>'
+                f'<div class="ev-featured-value">{top.reference_books} books</div>'
+                f'<div class="ev-featured-sub">Range: {market_range}</div></div></div>',
                 unsafe_allow_html=True,
             )
         with action_column:
             st.caption("BEST AVAILABLE PRICE")
-            st.markdown(f"**{top.quote.sportsbook.name} · {offered_odds}**")
+            st.markdown(f"### {top.quote.sportsbook.name}  {offered_odds}")
             if sportsbook_url:
                 st.link_button(
-                    f"Bet now on {top.quote.sportsbook.name} · {offered_odds}",
+                    f"Bet {offered_odds} on {top.quote.sportsbook.name}",
                     sportsbook_url,
                     type="primary",
                     icon=":material/open_in_new:",
                     width="stretch",
                 )
-
-        metrics = st.columns(4)
-        metrics[0].metric(
-            "Bet at",
-            top.quote.sportsbook.name,
-            help="The sportsbook offering the recommended price.",
-        )
-        metrics[1].metric(
-            "Offered odds",
-            offered_odds,
-            help="The actual price currently offered by your selected sportsbook.",
-        )
-        metrics[2].metric(
-            "Estimated edge",
-            f"{top.expected_value:.2%}",
-            help="Estimated long-run return relative to the consensus fair probability.",
-        )
-        metrics[3].metric(
-            "Consensus fair odds",
-            format_odds(top.fair_odds, odds_format),
-            help=(
-                "A margin-free estimate derived from the other available sportsbooks. It is not "
-                "an offered betting price."
-            ),
-        )
         st.markdown(
-            '<div class="best-bet-proof">'
-            f"Compared with {html.escape(', '.join(top.reference_sportsbooks))} · "
-            f"Price updated {_age_label(top.quote, as_of)} ago · Confirm the price before betting"
+            '<div class="best-bet-support">'
+            f"<span>◎ Consensus fair line: <strong>{fair_odds}</strong></span>"
+            f"<span>▥ Market range: <strong>{market_range}</strong></span>"
+            f"<span>◷ Data freshness: <strong>{_age_label(top.quote, as_of)} ago</strong></span>"
             "</div>",
             unsafe_allow_html=True,
         )
+        with st.expander("View comparison", expanded=False):
+            _render_value_comparison(top, quotes, odds_format, as_of)
 
-    if len(qualifying) <= 1:
+    ev_rank = {
+        item.quote.outcome.id: rank
+        for rank, item in enumerate(
+            sorted(values, key=lambda candidate: candidate.expected_value, reverse=True),
+            start=1,
+        )
+    }
+    remaining = tuple(item for item in values if item.quote.outcome.id != top.quote.outcome.id)
+    st.markdown(
+        f'<div class="ev-list-title">All +EV Bets '
+        f'<span class="ev-count-badge">{len(values)}</span></div>',
+        unsafe_allow_html=True,
+    )
+    if not remaining:
+        st.caption("No additional matching opportunities.")
         return
 
-    st.markdown("#### More +EV bets")
-    st.caption("Open any bet for the complete price and consensus breakdown.")
-    for rank, item in enumerate(qualifying[1:20], start=2):
-        item_event = event_map.get(item.quote.outcome.market.event_id)
-        item_event_name = (
-            item_event.name if item_event is not None else item.quote.outcome.market.event_id
-        )
-        item_market = _market_label(item.quote.outcome.market)
+    header = (
+        '<div class="ev-table-head ev-grid"><span>#</span><span>MATCHUP</span>'
+        '<span class="ev-market">MARKET</span><span>BEST ODDS</span>'
+        '<span>IMPLIED PROB.</span><span class="ev-fair">FAIR ODDS</span><span>EV</span>'
+        '<span class="ev-consensus">CONSENSUS</span><span class="ev-range">MARKET RANGE</span>'
+        '<span class="ev-best-book">BEST BOOK</span><span>ACTION</span><span></span></div>'
+    )
+    rows: list[str] = []
+    for item in remaining[:50]:
+        item_event = event_map[item.quote.outcome.market.event_id]
         item_selection = _selection_label(item.quote, item_event)
-        item_pick = (
-            f"{item_selection} moneyline"
-            if item.quote.outcome.market.kind is MarketKind.MONEYLINE
-            else item_selection
-        )
+        item_market = _market_label(item.quote.outcome.market)
         item_odds = format_odds(item.quote.decimal_odds, odds_format)
         item_fair_odds = format_odds(item.fair_odds, odds_format)
+        item_implied = implied_probability(item.quote.decimal_odds)
+        item_range = _market_range_label(item, quotes, odds_format)
         item_book = item.quote.sportsbook.name
         item_url = SPORTSBOOK_URLS.get(item_book)
-        event_detail = f"{item_event_name} · {item_market}"
-        if item_event is not None:
-            event_detail += (
-                f" · {item_event.league_id.upper()} · "
-                f"{item_event.start_time.astimezone().strftime('%a %b %d, %I:%M %p')}"
-            )
-
-        expander_label = (
-            f"#{rank} · BET {item_pick.upper()} · {item_book} {item_odds} · "
-            f"{item.expected_value:.2%} +EV"
+        link_markup = (
+            f'<a class="ev-action" href="{html.escape(item_url)}" target="_blank" '
+            f'rel="noopener noreferrer">Bet now ↗</a>'
+            if item_url
+            else '<span class="ev-cell-sub">Open book</span>'
         )
-        with st.container(key=f"value_opportunity_{rank}"), st.expander(
-            expander_label, expanded=False
-        ):
-            detail_column, action_column = st.columns(
-                [3.3, 1.3], vertical_alignment="center"
-            )
-            detail_column.markdown(
-                f'<div class="value-bet-pick">BET {html.escape(item_pick.upper())}</div>'
-                f'<div class="value-bet-event">{html.escape(event_detail)}</div>',
-                unsafe_allow_html=True,
-            )
-            with action_column:
-                st.caption("BEST AVAILABLE PRICE")
-                st.markdown(f"**{item_book} · {item_odds}**")
-                if item_url:
-                    st.link_button(
-                        f"Bet now on {item_book} · {item_odds}",
-                        item_url,
-                        type="primary",
-                        icon=":material/open_in_new:",
-                        width="stretch",
-                    )
+        details_markup = _value_comparison_markup(item, quotes, odds_format, as_of)
+        rows.append(
+            '<details class="ev-table-row"><summary class="ev-grid">'
+            f'<span class="ev-rank">#{ev_rank[item.quote.outcome.id]}</span>'
+            f'<span class="ev-matchup"><strong>{html.escape(item_selection)}</strong>'
+            f'<span>{html.escape(item_event.name)}<br>{item_event.league_id.upper()} · '
+            f"{item_event.start_time.astimezone().strftime('%a %b %d, %I:%M %p')}</span></span>"
+            f'<span class="ev-market ev-cell-main">{html.escape(item_market)}</span>'
+            f'<span><span class="ev-odds">{item_odds}</span>'
+            f'<span class="ev-cell-sub">{html.escape(item_book)}</span></span>'
+            f'<span class="ev-cell-main">{item_implied:.1%}'
+            '<span class="ev-cell-sub">Break-even</span></span>'
+            f'<span class="ev-fair ev-cell-main">{item_fair_odds}'
+            '<span class="ev-cell-sub">Consensus</span></span>'
+            f'<span class="ev-positive">{_format_edge(item.expected_value)}</span>'
+            f'<span class="ev-consensus ev-cell-main">{item.reference_books} books</span>'
+            f'<span class="ev-range ev-cell-main">{item_range}</span>'
+            f'<span class="ev-best-book ev-cell-main"><strong>{html.escape(item_book)}</strong>'
+            f'<span class="ev-cell-sub">{item_odds}</span></span>'
+            f'<span>{link_markup}</span><span class="ev-chevron">⌄</span>'
+            f'</summary><div class="ev-details">{details_markup}</div></details>'
+        )
+    st.markdown(
+        f'<div class="ev-table-wrap">{header}{"".join(rows)}</div>',
+        unsafe_allow_html=True,
+    )
+    st.caption(f"Showing {len(remaining[:50])} of {len(remaining)} additional bets")
 
-            item_metrics = st.columns(4)
-            item_metrics[0].metric(
-                "Bet at",
-                item_book,
-                help="The sportsbook offering the recommended price.",
-            )
-            item_metrics[1].metric(
-                "Offered odds",
-                item_odds,
-                help="The actual price currently offered by the sportsbook.",
-            )
-            item_metrics[2].metric(
-                "Estimated edge",
-                f"{item.expected_value:.2%}",
-                help="Estimated long-run return relative to the consensus fair probability.",
-            )
-            item_metrics[3].metric(
-                "Consensus fair odds",
-                item_fair_odds,
-                help=(
-                    "A margin-free estimate derived from the other available sportsbooks. "
-                    "It is not an offered betting price."
-                ),
-            )
-            st.markdown(
-                '<div class="value-bet-proof">'
-                f"Compared with {html.escape(', '.join(item.reference_sportsbooks))} · "
-                f"Price updated {_age_label(item.quote, as_of)} ago · "
-                "Confirm the price before betting"
-                "</div>",
-                unsafe_allow_html=True,
-            )
+
+def _value_comparison_markup(
+    opportunity: ValueOpportunity,
+    quotes: tuple[Quote, ...],
+    odds_format: str,
+    as_of: datetime,
+) -> str:
+    offered_probability = implied_probability(opportunity.quote.decimal_odds)
+    market_range = _market_range_label(opportunity, quotes, odds_format)
+    fair_odds = format_odds(opportunity.fair_odds, odds_format)
+    edge = _format_edge(opportunity.expected_value)
+    updated = _age_label(opportunity.quote, as_of)
+    metric_markup = (
+        '<div class="ev-details-metrics">'
+        f'<span class="ev-detail-metric">Fair odds<strong>{fair_odds}</strong></span>'
+        '<span class="ev-detail-metric">Fair probability'
+        f"<strong>{opportunity.fair_probability:.1%}</strong></span>"
+        '<span class="ev-detail-metric">Offered implied probability'
+        f"<strong>{offered_probability:.1%}</strong></span>"
+        f'<span class="ev-detail-metric">EV<strong>{edge}</strong></span>'
+        f'<span class="ev-detail-metric">Market range<strong>{market_range}</strong></span>'
+        f'<span class="ev-detail-metric">Updated<strong>{updated} ago</strong></span>'
+        "</div>"
+    )
+    price_cards: list[str] = []
+    for quote in _quotes_for_opportunity(opportunity, quotes):
+        book = quote.sportsbook.name
+        is_best = quote.sportsbook.id == opportunity.quote.sportsbook.id
+        if is_best:
+            role = "Best offer · excluded from own consensus"
+        elif book in opportunity.reference_sportsbooks:
+            role = "Consensus contributor"
+        else:
+            role = "Available price · not used"
+        url = SPORTSBOOK_URLS.get(book)
+        action = (
+            f' · <a href="{html.escape(url)}" target="_blank" rel="noopener noreferrer">Bet ↗</a>'
+            if url
+            else ""
+        )
+        price_cards.append(
+            f'<span class="ev-book-price{" best" if is_best else ""}">'
+            f'<strong>{html.escape(book)} · {format_odds(quote.decimal_odds, odds_format)}</strong>'
+            f'{html.escape(role)} · {_age_label(quote, as_of)} ago{action}</span>'
+        )
+    contributors = html.escape(", ".join(opportunity.reference_sportsbooks))
+    contributor_markup = (
+        '<div class="ev-detail-metric">No-vig consensus contributors'
+        f"<strong>{contributors}</strong></div>"
+    )
+    return (
+        metric_markup
+        + contributor_markup
+        + f'<div class="ev-book-prices">{"".join(price_cards)}</div>'
+    )
+
+
+def _render_value_comparison(
+    opportunity: ValueOpportunity,
+    quotes: tuple[Quote, ...],
+    odds_format: str,
+    as_of: datetime,
+) -> None:
+    st.markdown(
+        _value_comparison_markup(opportunity, quotes, odds_format, as_of),
+        unsafe_allow_html=True,
+    )
 
 
 def _render_overview(
     values: tuple[ValueOpportunity, ...],
     event_map: dict[str, Event],
+    quotes: tuple[Quote, ...],
     as_of: datetime,
     odds_format: str,
-    my_books: tuple[str, ...],
 ) -> None:
-    _render_priority_value_bets(values, event_map, odds_format, as_of, my_books)
+    _render_priority_value_bets(values, event_map, quotes, odds_format, as_of)
 
 
 def _render_games(
@@ -1399,7 +2011,7 @@ def _render_settings(
 def run() -> None:
     app_icon = Path(__file__).resolve().parents[2] / "assets" / "advantage-betting-terminal.png"
     st.set_page_config(
-        page_title="Advantage Betting Terminal",
+        page_title="+EV Bets · Advantage Terminal",
         page_icon=str(app_icon),
         layout="wide",
     )
@@ -1426,11 +2038,8 @@ def run() -> None:
         | set(STARTER_BOOKS),
         key=_book_sort_key,
     )
-    controls = _sidebar(repository, available_books, is_admin=is_admin)
-    active_leagues, header_odds_status, header_dashboard = _render_page_header(
-        str(controls["mode"])
-    )
-    controls["active_leagues"] = active_leagues
+    controls = _sidebar(repository, is_admin=is_admin)
+    header_odds_status = _render_page_header(str(controls["mode"]))
 
     refresh_notice = st.session_state.pop("refresh_notice", None)
     if refresh_notice:
@@ -1587,17 +2196,32 @@ def run() -> None:
         max_age=controls["freshness"],
     )
     middles = detect_middles(quotes, as_of=as_of, max_age=controls["freshness"])
-    my_books = tuple(str(book) for book in controls["my_books"])
+    ev_filters = _render_ev_filter_bar(
+        available_books,
+        str(controls["mode"]),
+        events,
+        quotes,
+        as_of,
+    )
+    candidate_books: tuple[str, ...] | None = ev_filters.my_books or None
     values = detect_consensus_value(
         quotes,
         as_of=as_of,
         max_age=controls["freshness"],
-        minimum_ev=Decimal("0.005"),
-        candidate_sportsbooks=my_books,
+        minimum_ev=Decimal("0"),
+        candidate_sportsbooks=candidate_books,
         include_stale=True,
     )
+    filtered_values = _filter_value_opportunities(
+        values,
+        event_map,
+        ev_filters,
+        as_of=as_of,
+        max_age=controls["freshness"],
+    )
+    controls["my_books"] = list(ev_filters.my_books)
     _render_odds_status(quotes, fresh_quotes, as_of, container=header_odds_status)
-    _render_header_dashboard(header_dashboard, quotes, values)
+    _render_ev_summary(quotes, filtered_values)
 
     tab_names = ["Best Bets", "All Tools", "Games", "Movement"]
     if is_admin:
@@ -1606,11 +2230,11 @@ def run() -> None:
     overview_tab, opportunities_tab, games_tab, movement_tab = tabs[:4]
     with overview_tab:
         _render_overview(
-            values,
+            filtered_values,
             event_map,
+            quotes,
             as_of,
             controls["odds_format"],
-            my_books,
         )
     with opportunities_tab:
         arb_tab, middle_tab, value_tab, best_tab = st.tabs(
@@ -1621,7 +2245,7 @@ def run() -> None:
         with middle_tab:
             _render_middles(middles, event_map)
         with value_tab:
-            _render_value(values, event_map, controls["odds_format"])
+            _render_value(filtered_values, event_map, controls["odds_format"])
         with best_tab:
             _render_best_lines(quotes, event_map, controls["odds_format"])
     with games_tab:
