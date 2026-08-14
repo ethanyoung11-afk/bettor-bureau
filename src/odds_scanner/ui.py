@@ -270,6 +270,42 @@ def _inject_theme() -> None:
         .st-key-top_opportunity .best-bet-proof {
             color:#8f9db1; font-size:.78rem; padding-top:.1rem;
         }
+        div[class*="st-key-value_opportunity_"] {
+            background:linear-gradient(135deg, #0f1827 0%, #0b121d 72%, #0d1b18 100%);
+            border:1px solid #26354b !important; border-radius:12px;
+            padding:.7rem .8rem; margin:.15rem 0;
+            transition:border-color .16s ease, box-shadow .16s ease, transform .16s ease;
+        }
+        div[class*="st-key-value_opportunity_"]:hover {
+            border-color:#2a8a5d !important;
+            box-shadow:0 8px 24px rgba(0,0,0,.2), inset 3px 0 #39d98a;
+            transform:translateY(-1px);
+        }
+        div[class*="st-key-value_opportunity_"] [data-testid="stLinkButton"] a {
+            min-height:45px; font-weight:850; letter-spacing:.01em;
+            background:#22c55e !important; border-color:#39d98a !important;
+            color:#04110a !important; box-shadow:0 6px 18px rgba(57,217,138,.18);
+        }
+        div[class*="st-key-value_opportunity_"] [data-testid="stLinkButton"] a:hover {
+            background:#39d98a !important; border-color:#77efb2 !important;
+            box-shadow:0 8px 24px rgba(57,217,138,.3);
+        }
+        .opportunity-rank {
+            display:flex; align-items:center; justify-content:center; width:34px; height:34px;
+            border-radius:50%; background:#162337; border:1px solid #32425b;
+            color:#9eabc0; font-size:.78rem; font-weight:850;
+        }
+        .opportunity-pick {
+            color:#f8fafc; font-size:1.05rem; line-height:1.18; font-weight:850;
+            letter-spacing:-.015em; margin-bottom:.16rem;
+        }
+        .opportunity-event { color:#9aa7ba; font-size:.78rem; line-height:1.3; }
+        .opportunity-label {
+            color:#7f8ca1; font-size:.66rem; font-weight:750; letter-spacing:.08em;
+            text-transform:uppercase; margin-bottom:.12rem;
+        }
+        .opportunity-value { color:#f2f5f9; font-size:.94rem; font-weight:800; }
+        .opportunity-edge { color:#55e69c; }
         .risk-note { color:#94a3b8; font-size:.78rem; }
         .stDataFrame { border: 1px solid #202b3d; border-radius: 8px; overflow:hidden; }
         [data-testid="stExpander"] { border-color: #202b3d; background: #0b111c; }
@@ -960,67 +996,71 @@ def _render_priority_value_bets(
         )
 
     st.markdown("#### More +EV opportunities")
-    rows = [
-        {
-            "#": rank,
-            "Event": (
-                event_map[item.quote.outcome.market.event_id].name
-                if item.quote.outcome.market.event_id in event_map
-                else item.quote.outcome.market.event_id
-            ),
-            "Market": _market_label(item.quote.outcome.market),
-            "Bet": _selection_label(
-                item.quote,
-                event_map.get(item.quote.outcome.market.event_id),
-            ),
-            "Bet at": item.quote.sportsbook.name,
-            "Book odds": format_odds(item.quote.decimal_odds, odds_format),
-            "Fair odds": format_odds(item.fair_odds, odds_format),
-            "Est. +EV": float(item.expected_value * Decimal("100")),
-            "Compared with": ", ".join(item.reference_sportsbooks),
-            "Age": _age_label(item.quote, as_of),
-        }
-        for rank, item in enumerate(qualifying[:20], start=1)
-    ]
-    st.dataframe(
-        rows,
-        hide_index=True,
-        width="stretch",
-        height=min(470, 38 + 35 * len(rows)),
-        column_config={
-            "#": st.column_config.NumberColumn(width="small"),
-            "Event": st.column_config.TextColumn(width="large", pinned=True),
-            "Book odds": st.column_config.TextColumn(
-                help="The actual odds offered by the sportsbook in the Bet at column."
-            ),
-            "Fair odds": st.column_config.TextColumn(
-                "Estimated fair odds",
-                help=(
-                    "The break-even odds implied by the average margin-free probability from "
-                    "the comparison sportsbooks. This is an estimate, not an offered price."
-                ),
-            ),
-            "Est. +EV": st.column_config.NumberColumn(
-                "Estimated +EV",
-                format="%.2f%%",
-                help=(
-                    "Estimated expected return: consensus fair probability × offered decimal "
-                    "odds − 1. For example, 5.00% means an estimated $5 return above stake per "
-                    "$100 wagered over the long run—not a guaranteed result."
-                ),
-            ),
-            "Compared with": st.column_config.TextColumn(
-                help=(
-                    "The other enabled sportsbooks used to build the consensus. The sportsbook "
-                    "offering this bet is excluded from its own comparison."
+    for rank, item in enumerate(qualifying[:20], start=1):
+        item_event = event_map.get(item.quote.outcome.market.event_id)
+        item_event_name = (
+            item_event.name if item_event is not None else item.quote.outcome.market.event_id
+        )
+        item_market = _market_label(item.quote.outcome.market)
+        item_selection = _selection_label(item.quote, item_event)
+        item_pick = (
+            f"{item_selection} moneyline"
+            if item.quote.outcome.market.kind is MarketKind.MONEYLINE
+            else item_selection
+        )
+        item_odds = format_odds(item.quote.decimal_odds, odds_format)
+        item_fair_odds = format_odds(item.fair_odds, odds_format)
+        item_book = item.quote.sportsbook.name
+        item_url = SPORTSBOOK_URLS.get(item_book)
+        event_detail = f"{item_event_name} · {item_market}"
+        if item_event is not None:
+            event_detail += (
+                f" · {item_event.league_id.upper()} · "
+                f"{item_event.start_time.astimezone().strftime('%a %b %d, %I:%M %p')}"
+            )
+
+        with st.container(border=True, key=f"value_opportunity_{rank}"):
+            rank_column, pick_column, price_column, edge_column, fair_column, bet_column = (
+                st.columns(
+                    [0.35, 3.05, 1.2, 1.0, 1.05, 1.45],
+                    vertical_alignment="center",
                 )
-            ),
-            "Age": st.column_config.TextColumn(
-                help="How long ago this sportsbook last updated the displayed price."
-            ),
-        },
-    )
-    st.caption("Hover the column headers for definitions of fair odds, +EV, and consensus.")
+            )
+            rank_column.markdown(
+                f'<div class="opportunity-rank">#{rank}</div>',
+                unsafe_allow_html=True,
+            )
+            pick_column.markdown(
+                f'<div class="opportunity-pick">BET {html.escape(item_pick.upper())}</div>'
+                f'<div class="opportunity-event">{html.escape(event_detail)} · '
+                f"Compared with {html.escape(', '.join(item.reference_sportsbooks))} · "
+                f"Updated {_age_label(item.quote, as_of)} ago</div>",
+                unsafe_allow_html=True,
+            )
+            price_column.markdown(
+                '<div class="opportunity-label">Best price</div>'
+                f'<div class="opportunity-value">{html.escape(item_book)} · '
+                f"{html.escape(item_odds)}</div>",
+                unsafe_allow_html=True,
+            )
+            edge_column.markdown(
+                '<div class="opportunity-label">Est. edge</div>'
+                f'<div class="opportunity-value opportunity-edge">{item.expected_value:.2%}</div>',
+                unsafe_allow_html=True,
+            )
+            fair_column.markdown(
+                '<div class="opportunity-label">Fair odds</div>'
+                f'<div class="opportunity-value">{html.escape(item_fair_odds)}</div>',
+                unsafe_allow_html=True,
+            )
+            if item_url:
+                bet_column.link_button(
+                    f"Bet now · {item_odds}",
+                    item_url,
+                    type="primary",
+                    icon=":material/open_in_new:",
+                    width="stretch",
+                )
     with st.expander("How these bets are ranked", expanded=False):
         st.write(
             "The scanner removes each comparison book's margin, averages the remaining fair "
