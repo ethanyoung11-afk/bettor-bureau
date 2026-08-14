@@ -9,10 +9,18 @@ from typing import Any
 
 import requests
 
-from odds_scanner.domain import OddsSnapshot, Quote, Sportsbook, stable_id
+from odds_scanner.domain import (
+    MarketKind,
+    OddsSnapshot,
+    OutcomeSide,
+    Quote,
+    Sportsbook,
+    stable_id,
+)
 from odds_scanner.normalization import (
     FOOTBALL_MARKETS,
     IdentityResolver,
+    MarketDefinition,
     MarketNormalizer,
     NormalizationError,
     canonical_token,
@@ -22,6 +30,21 @@ from odds_scanner.normalization import (
 from odds_scanner.providers.odds_api import FOOTBALL_LEAGUES, parse_timestamp
 
 AMERICAN_FOOTBALL_SPORT_ID = 14
+ODDSPAPI_FOOTBALL_MARKETS = {*FOOTBALL_MARKETS, "player_props"}
+
+PLAYER_PROP_LABELS: Mapping[str, str] = {
+    "playertotals-passyards": "Passing yards",
+    "playertotals-rushyards": "Rushing yards",
+    "playertotals-receivingyards": "Receiving yards",
+    "playertotals-receptions": "Receptions",
+    "playertotals-tdpasses": "Passing touchdowns",
+    "playertotals-interceptions": "Interceptions thrown",
+    "players-td": "Anytime touchdown",
+    "players-td-other": "Anytime touchdown",
+    "players-firsttd": "First touchdown scorer",
+    "players-secondtd": "Second touchdown scorer",
+    "players-thirdtd": "Third touchdown scorer",
+}
 
 BOOK_DISPLAY_NAMES: Mapping[str, str] = {
     "bet365": "Bet365",
@@ -90,6 +113,48 @@ def _full_game_market(raw_market: Mapping[str, Any]) -> str | None:
     return None
 
 
+def _player_prop_definition(
+    raw_market: Mapping[str, Any],
+    player_name: str,
+) -> MarketDefinition | None:
+    if not raw_market.get("playerProp"):
+        return None
+    period = canonical_token(str(raw_market.get("period", "")))
+    if period not in {"", "result", "fulltime", "full-time", "game", "match"}:
+        return None
+    outcome_tokens = {
+        canonical_token(str(outcome.get("outcomeName", "")))
+        for outcome in raw_market.get("outcomes", [])
+        if isinstance(outcome, Mapping)
+    }
+    if outcome_tokens == {"over", "under"}:
+        required_sides = (OutcomeSide.OVER, OutcomeSide.UNDER)
+    elif outcome_tokens == {"yes", "no"}:
+        required_sides = (OutcomeSide.YES, OutcomeSide.NO)
+    else:
+        return None
+    market_type = canonical_token(str(raw_market.get("marketType", "")))
+    stat_label = PLAYER_PROP_LABELS.get(market_type)
+    if stat_label is None:
+        stat_label = str(raw_market.get("marketName", "Player prop"))
+        for removable in ("(incl. overtime)", "Over Under ", "Player "):
+            stat_label = stat_label.replace(removable, "")
+        stat_label = stat_label.strip() or "Player prop"
+    return MarketDefinition(
+        provider_key="player_props",
+        kind=MarketKind.PLAYER_PROP,
+        required_sides=required_sides,
+        stat_key=stat_label,
+        variant=player_name,
+    )
+
+
+def _supported_market(raw_market: Mapping[str, Any]) -> str | None:
+    if raw_market.get("playerProp"):
+        return "player_props" if _player_prop_definition(raw_market, "player") else None
+    return _full_game_market(raw_market)
+
+
 def _outcome_name(raw_name: str, market_key: str, event_home: str, event_away: str) -> str | None:
     token = canonical_token(raw_name)
     if market_key in {"h2h", "spreads"}:
@@ -100,11 +165,15 @@ def _outcome_name(raw_name: str, market_key: str, event_home: str, event_away: s
         if token in {canonical_token(event_home), canonical_token(event_away)}:
             return raw_name
         return None
-    if market_key == "totals":
+    if market_key in {"totals", "player_props"}:
         if token.startswith("over"):
             return "Over"
         if token.startswith("under"):
             return "Under"
+        if token == "yes":
+            return "Yes"
+        if token == "no":
+            return "No"
     return None
 
 
@@ -146,7 +215,7 @@ class OddsPapiProvider:
         requested_leagues = tuple(dict.fromkeys(league_keys))
         requested_markets = tuple(dict.fromkeys(market_keys))
         unsupported_leagues = set(requested_leagues) - FOOTBALL_LEAGUES.keys()
-        unsupported_markets = set(requested_markets) - FOOTBALL_MARKETS.keys()
+        unsupported_markets = set(requested_markets) - ODDSPAPI_FOOTBALL_MARKETS
         if unsupported_leagues:
             raise OddsPapiError(f"Unsupported league keys: {sorted(unsupported_leagues)}")
         if unsupported_markets:
@@ -318,10 +387,10 @@ class OddsPapiProvider:
                 catalog = self.market_catalog.get(str(market_id_value))
                 if not catalog:
                     continue
-                provider_market_key = _full_game_market(catalog)
+                provider_market_key = _supported_market(catalog)
                 if provider_market_key not in requested_markets:
                     continue
-                definition = FOOTBALL_MARKETS[provider_market_key]
+                standard_definition = FOOTBALL_MARKETS.get(provider_market_key)
                 handicap = catalog.get("handicap")
                 outcome_catalog = {
                     str(item.get("outcomeId")): str(item.get("outcomeName", ""))
@@ -351,11 +420,23 @@ class OddsPapiProvider:
                             or raw_price_value.get("active") is False
                         ):
                             continue
-                        if raw_price_value.get("playerName"):
-                            continue
                         if raw_price_value.get("mainLine") is False:
                             continue
                         try:
+                            player_name = str(raw_price_value.get("playerName") or "").strip()
+                            subject_id: str | None = None
+                            if provider_market_key == "player_props":
+                                if not player_name:
+                                    continue
+                                player = self.identity_resolver.player(league, player_name)
+                                definition = _player_prop_definition(catalog, player.name)
+                                if definition is None:
+                                    continue
+                                subject_id = player.id
+                            else:
+                                if player_name or standard_definition is None:
+                                    continue
+                                definition = standard_definition
                             point: object | None = handicap
                             if (
                                 provider_market_key == "spreads"
@@ -367,6 +448,7 @@ class OddsPapiProvider:
                                 definition,
                                 normalized_name,
                                 point,
+                                subject_id=subject_id,
                             )
                             price: Decimal = decimal_value(raw_price_value.get("price"))
                             if price <= Decimal("1"):

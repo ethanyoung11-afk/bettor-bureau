@@ -18,7 +18,11 @@ def test_demo_feed_exercises_complete_product(now):
     snapshots = generate_demo_snapshots(now)
     assert len(snapshots) == 12
     assert len(snapshots[-1].events) == 6
-    assert len(snapshots[-1].quotes) == 252
+    assert len(snapshots[-1].quotes) == 336
+    assert any(
+        quote.outcome.market.kind is MarketKind.PLAYER_PROP
+        for quote in snapshots[-1].quotes
+    )
     assert {quote.sportsbook.id for quote in snapshots[-1].quotes} == {
         "draftkings",
         "fanduel",

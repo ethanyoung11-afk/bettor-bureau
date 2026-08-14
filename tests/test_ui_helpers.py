@@ -3,6 +3,7 @@ from odds_scanner.ui import (
     PRIORITY_BOOKS,
     SPORTSBOOK_URLS,
     _event_odds_frame,
+    _market_label,
     _password_matches,
     _selection_label,
 )
@@ -53,3 +54,17 @@ def test_selection_label_uses_the_team_name_when_event_is_available(now):
 
 def test_every_priority_book_has_a_bet_now_destination():
     assert set(PRIORITY_BOOKS) <= SPORTSBOOK_URLS.keys()
+
+
+def test_player_prop_labels_name_the_player_stat_and_line(now):
+    snapshot = generate_demo_snapshots(now)[-1]
+    quote = next(
+        item
+        for item in snapshot.quotes
+        if item.outcome.market.kind.value == "player_prop"
+    )
+
+    assert _market_label(quote.outcome.market) == "Passing yards"
+    selection = _selection_label(quote)
+    assert quote.outcome.market.variant in selection
+    assert str(quote.outcome.market.line) in selection

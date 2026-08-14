@@ -79,6 +79,19 @@ def _catalog() -> list[dict[str, object]]:
                 {"outcomeId": 4012, "outcomeName": "Under"},
             ],
         },
+        {
+            "marketId": 501,
+            "marketName": "Over Under Pass Yards (incl. overtime)",
+            "marketType": "playertotals-passyards",
+            "period": "result",
+            "playerProp": True,
+            "sportId": 14,
+            "handicap": 249.5,
+            "outcomes": [
+                {"outcomeId": 5011, "outcomeName": "Over"},
+                {"outcomeId": 5012, "outcomeName": "Under"},
+            ],
+        },
     ]
 
 
@@ -97,6 +110,25 @@ def _market(outcome_ids: tuple[int, int], prices: tuple[str, str]) -> dict[str, 
                 }
             }
             for outcome_id, price in zip(outcome_ids, prices, strict=True)
+        },
+    }
+
+
+def _player_prop_market(prices: tuple[str, str]) -> dict[str, object]:
+    return {
+        "marketActive": True,
+        "outcomes": {
+            str(outcome_id): {
+                "players": {
+                    "44": {
+                        "active": True,
+                        "playerName": "Nathan Rourke",
+                        "price": price,
+                        "mainLine": True,
+                    }
+                }
+            }
+            for outcome_id, price in zip((5011, 5012), prices, strict=True)
         },
     }
 
@@ -183,6 +215,55 @@ def test_oddspapi_reuses_discovery_catalogs() -> None:
     assert isinstance(session, StubSession)
     assert [call[0] for call in session.calls] == ["odds-by-tournaments"]
     assert provider.request_count == 1
+
+
+def test_oddspapi_normalizes_player_props_without_extra_requests() -> None:
+    event = {
+        "fixtureId": "fixture-props",
+        "tournamentId": 900,
+        "participant1Name": "BC Lions",
+        "participant2Name": "Calgary Stampeders",
+        "startTime": "2026-08-14T02:00:00Z",
+        "bookmakerOdds": {
+            "playnow": {
+                "bookmakerIsActive": True,
+                "markets": {"501": _player_prop_market(("2.05", "1.80"))},
+            },
+            "betway": {
+                "bookmakerIsActive": True,
+                "markets": {"501": _player_prop_market(("1.95", "1.91"))},
+            },
+        },
+    }
+    session = StubSession(
+        {
+            "tournaments": [{"tournamentId": 900, "tournamentName": "CFL"}],
+            "markets": _catalog(),
+            "odds-by-tournaments": [event],
+        }
+    )
+    provider = OddsPapiProvider(
+        api_key="test",
+        bookmaker_slugs=("playnow",),
+        bookmaker_cooldown_seconds=0,
+        session=session,  # type: ignore[arg-type]
+    )
+
+    snapshot = provider.fetch_snapshot(["americanfootball_cfl"], ["player_props"])
+
+    assert len(snapshot.quotes) == 4
+    assert {quote.outcome.market.kind for quote in snapshot.quotes} == {
+        MarketKind.PLAYER_PROP
+    }
+    market = snapshot.quotes[0].outcome.market
+    assert market.variant == "Nathan Rourke"
+    assert market.stat_key == "Passing yards"
+    assert market.line == Decimal("249.5")
+    assert {quote.outcome.side for quote in snapshot.quotes} == {
+        OutcomeSide.OVER,
+        OutcomeSide.UNDER,
+    }
+    assert provider.request_count == 3
 
 
 def test_oddspapi_timestamps_are_aware() -> None:

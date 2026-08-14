@@ -103,11 +103,14 @@ def _quote(
     observed_at: datetime,
     *,
     line: str | None = None,
+    subject_id: str | None = None,
+    stat_key: str | None = None,
+    variant: str = "standard",
     source_age: timedelta = timedelta(seconds=20),
 ) -> Quote:
     required_sides = (
         (OutcomeSide.OVER, OutcomeSide.UNDER)
-        if kind is MarketKind.TOTAL
+        if kind in {MarketKind.TOTAL, MarketKind.PLAYER_PROP}
         else (OutcomeSide.HOME, OutcomeSide.AWAY)
     )
     market = MarketKey(
@@ -115,6 +118,9 @@ def _quote(
         kind=kind,
         required_sides=required_sides,
         line=Decimal(line) if line is not None else None,
+        subject_id=subject_id,
+        stat_key=stat_key,
+        variant=variant,
     )
     return Quote(
         provider_id="demo",
@@ -240,6 +246,39 @@ def _quotes_for_event(
                 ),
             )
         )
+
+        player_name = f"{event.home.name} QB"
+        prop_line = Decimal("249.5") + Decimal(event_index * 5)
+        quotes.extend(
+            (
+                _quote(
+                    event,
+                    book,
+                    MarketKind.PLAYER_PROP,
+                    OutcomeSide.OVER,
+                    "1.91" if book.id != "playnow" else "2.08",
+                    observed_at,
+                    line=str(prop_line),
+                    subject_id=f"{event.id}-quarterback",
+                    stat_key="Passing yards",
+                    variant=player_name,
+                    source_age=source_age,
+                ),
+                _quote(
+                    event,
+                    book,
+                    MarketKind.PLAYER_PROP,
+                    OutcomeSide.UNDER,
+                    "1.91",
+                    observed_at,
+                    line=str(prop_line),
+                    subject_id=f"{event.id}-quarterback",
+                    stat_key="Passing yards",
+                    variant=player_name,
+                    source_age=source_age,
+                ),
+            )
+        )
     return quotes
 
 
@@ -287,6 +326,7 @@ class DemoOddsProvider:
             "h2h": MarketKind.MONEYLINE,
             "spreads": MarketKind.SPREAD,
             "totals": MarketKind.TOTAL,
+            "player_props": MarketKind.PLAYER_PROP,
         }
         selected_kinds = {kinds[key] for key in market_keys if key in kinds}
         event_ids = {event.id for event in snapshot.events if event.league_id in leagues}

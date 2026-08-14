@@ -42,7 +42,12 @@ from odds_scanner.storage.base import QuoteRepository
 from odds_scanner.storage.sqlite import SQLiteQuoteRepository
 
 LEAGUE_LABELS = {config.league_name: key for key, config in FOOTBALL_LEAGUES.items()}
-MARKET_LABELS = {"Moneyline": "h2h", "Spread": "spreads", "Total": "totals"}
+MARKET_LABELS = {
+    "Moneyline": "h2h",
+    "Spread": "spreads",
+    "Total": "totals",
+    "Player props": "player_props",
+}
 DATA_SOURCE_IDS = {
     "Demo": "demo",
     "OddsPapi Free": "oddspapi",
@@ -408,6 +413,8 @@ def _render_header_dashboard(
 
 
 def _market_label(market: MarketKey) -> str:
+    if market.kind is MarketKind.PLAYER_PROP:
+        return market.stat_key or "Player prop"
     label = MARKET_NAMES[market.kind]
     if market.line is not None:
         if market.kind is MarketKind.SPREAD:
@@ -418,6 +425,13 @@ def _market_label(market: MarketKey) -> str:
 
 
 def _selection_label(quote: Quote, event: Event | None = None) -> str:
+    market = quote.outcome.market
+    if market.kind is MarketKind.PLAYER_PROP:
+        player_name = market.variant if market.variant != "standard" else "Player"
+        side = quote.outcome.side.value.title()
+        if market.line is not None and market.line != 0:
+            return f"{player_name} {side} {market.line}"
+        return f"{player_name} {side}"
     side = quote.outcome.side.value.title()
     if event is not None:
         if quote.outcome.side is OutcomeSide.HOME:
@@ -426,7 +440,6 @@ def _selection_label(quote: Quote, event: Event | None = None) -> str:
             side = event.away.name
         elif quote.outcome.side is OutcomeSide.DRAW:
             side = "Draw"
-    market = quote.outcome.market
     if market.kind is MarketKind.SPREAD and market.line is not None:
         line = market.line if quote.outcome.side is OutcomeSide.HOME else -market.line
         return f"{side} {line:+}"
@@ -575,11 +588,16 @@ def _sidebar(
             odds_format = st.radio("Odds", ["American", "Decimal"], horizontal=True)
         active_leagues = list(LEAGUE_ICONS)
         with st.expander("Markets", expanded=False):
+            market_options = ["Moneyline", "Spread", "Total"]
+            if data_mode in {"Demo", "OddsPapi Free"}:
+                market_options.append("Player props")
             active_markets = st.multiselect(
                 "Markets",
-                ["Moneyline", "Spread", "Total"],
-                default=["Moneyline", "Spread", "Total"],
+                market_options,
+                default=market_options,
             )
+            if data_mode == "OddsPapi Free":
+                st.caption("Player props use the same refresh. Futures require a separate feed.")
         with st.expander("Sportsbooks", expanded=False):
             st.caption(
                 "PlayNow and Betway are pinned first. All comparison books are enabled by default."
@@ -1529,10 +1547,14 @@ def run() -> None:
         and any(quote.outcome.market.event_id == event.id for quote in latest_quotes)
     )
     all_event_map = {event.id: event for event in all_events}
+    market_kinds = {
+        "Moneyline": MarketKind.MONEYLINE,
+        "Spread": MarketKind.SPREAD,
+        "Total": MarketKind.TOTAL,
+        "Player props": MarketKind.PLAYER_PROP,
+    }
     selected_kinds = {
-        {"Moneyline": MarketKind.MONEYLINE, "Spread": MarketKind.SPREAD, "Total": MarketKind.TOTAL}[
-            label
-        ]
+        market_kinds[label]
         for label in controls["active_markets"]
     }
     selected_leagues = {str(label).lower() for label in controls["active_leagues"]}
