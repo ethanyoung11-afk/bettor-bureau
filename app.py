@@ -1,0 +1,5 @@
+from odds_scanner.ui import run
+
+if __name__ == "__main__":
+    run()
+

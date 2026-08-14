@@ -1,0 +1,115 @@
+from __future__ import annotations
+
+from datetime import timedelta
+from decimal import Decimal
+
+from conftest import make_market, make_quote
+
+from odds_scanner.domain import BetStatus, OddsSnapshot, OutcomeSide, Sport, TrackedBet
+from odds_scanner.storage.sqlite import SQLiteQuoteRepository
+
+
+def test_sqlite_snapshot_round_trip(tmp_path, now, event, league):
+    market = make_market()
+    quote = make_quote(market, OutcomeSide.HOME, "2.10", now, book="alpha")
+    snapshot = OddsSnapshot(
+        provider_id="provider",
+        sports=(Sport("american-football", "American Football"),),
+        leagues=(league,),
+        events=(event,),
+        quotes=(quote,),
+        fetched_at=now,
+    )
+    repository = SQLiteQuoteRepository(tmp_path / "quotes.db")
+    repository.save_snapshot(snapshot)
+    loaded = repository.load_quotes_since(now - timedelta(minutes=1))
+    assert loaded == (quote,)
+
+
+def test_latest_quotes_keep_last_price_without_an_age_cutoff(tmp_path, now, event, league):
+    market = make_market()
+    old_quote = make_quote(market, OutcomeSide.HOME, "2.10", now, book="alpha")
+    new_quote = make_quote(
+        market,
+        OutcomeSide.HOME,
+        "2.25",
+        now,
+        book="alpha",
+        observed_offset_seconds=60,
+    )
+    repository = SQLiteQuoteRepository(tmp_path / "latest.db")
+    for quote in (old_quote, new_quote):
+        repository.save_snapshot(
+            OddsSnapshot(
+                provider_id="provider",
+                sports=(Sport("american-football", "American Football"),),
+                leagues=(league,),
+                events=(event,),
+                quotes=(quote,),
+                fetched_at=quote.observed_at,
+            )
+        )
+
+    assert repository.load_latest_quotes("provider") == (new_quote,)
+
+
+def test_latest_quotes_match_the_most_recent_complete_snapshot(tmp_path, now, event, league):
+    market = make_market()
+    home = make_quote(market, OutcomeSide.HOME, "2.10", now, book="alpha")
+    away = make_quote(market, OutcomeSide.AWAY, "1.80", now, book="alpha")
+    refreshed_home = make_quote(
+        market,
+        OutcomeSide.HOME,
+        "2.25",
+        now,
+        book="alpha",
+        observed_offset_seconds=60,
+    )
+    repository = SQLiteQuoteRepository(tmp_path / "current-snapshot.db")
+    repository.save_snapshot(
+        OddsSnapshot(
+            provider_id="provider",
+            sports=(Sport("american-football", "American Football"),),
+            leagues=(league,),
+            events=(event,),
+            quotes=(home, away),
+            fetched_at=now,
+        )
+    )
+    repository.save_snapshot(
+        OddsSnapshot(
+            provider_id="provider",
+            sports=(Sport("american-football", "American Football"),),
+            leagues=(league,),
+            events=(event,),
+            quotes=(refreshed_home,),
+            fetched_at=refreshed_home.observed_at,
+        )
+    )
+
+    assert repository.load_latest_quotes("provider") == (refreshed_home,)
+
+
+def test_settings_watchlist_and_bet_tracker_round_trip(tmp_path, now, event):
+    repository = SQLiteQuoteRepository(tmp_path / "terminal.db")
+    repository.save_setting("bankroll", "750")
+    repository.set_event_watched(event.id, True, now)
+    bet_id = repository.add_bet(
+        TrackedBet(
+            id=None,
+            created_at=now,
+            event_id=event.id,
+            event_name=event.name,
+            market_label="Moneyline",
+            selection="Home",
+            sportsbook="Alpha",
+            decimal_odds=Decimal("2.10"),
+            stake=Decimal("50"),
+        )
+    )
+    repository.update_bet(bet_id, BetStatus.WON, Decimal("55"))
+
+    assert repository.load_settings()["bankroll"] == "750"
+    assert repository.watched_event_ids() == frozenset({event.id})
+    assert repository.list_bets()[0].status is BetStatus.WON
+    assert repository.list_bets()[0].profit_loss == Decimal("55")

@@ -1,0 +1,390 @@
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from decimal import Decimal
+from time import sleep
+from typing import Any
+
+import requests
+
+from odds_scanner.domain import OddsSnapshot, Quote, Sportsbook, stable_id
+from odds_scanner.normalization import (
+    FOOTBALL_MARKETS,
+    IdentityResolver,
+    MarketNormalizer,
+    NormalizationError,
+    canonical_token,
+    decimal_value,
+    make_sport_and_league,
+)
+from odds_scanner.providers.odds_api import FOOTBALL_LEAGUES, parse_timestamp
+
+AMERICAN_FOOTBALL_SPORT_ID = 14
+
+BOOK_DISPLAY_NAMES: Mapping[str, str] = {
+    "bet365": "Bet365",
+    "betmgm": "BetMGM",
+    "betrivers": "BetRivers",
+    "betway": "Betway",
+    "caesars": "Caesars",
+    "circasports": "Circa Sports",
+    "draftkings": "DraftKings",
+    "fanduel": "FanDuel",
+    "pinnacle": "Pinnacle",
+    "playnow": "PlayNow",
+    "william-hill": "William Hill",
+    "william_hill": "William Hill",
+}
+
+
+class OddsPapiError(RuntimeError):
+    pass
+
+
+def _friendly_book_name(slug: str) -> str:
+    known = BOOK_DISPLAY_NAMES.get(slug.lower())
+    if known:
+        return known
+    return " ".join(part.capitalize() for part in slug.replace("_", "-").split("-") if part)
+
+
+def _league_key(tournament_name: str) -> str | None:
+    token = canonical_token(tournament_name)
+    if (
+        token == "nfl"
+        or token.startswith("nfl-regular")
+        or ("national-football-league" in token and "women" not in token)
+    ):
+        return "americanfootball_nfl"
+    if token == "cfl" or token.startswith("cfl-") or "canadian-football-league" in token:
+        return "americanfootball_cfl"
+    if (
+        token == "ncaaf"
+        or token.startswith("ncaa")
+        or "college-football" in token
+        or "ncaa-football" in token
+    ):
+        return "americanfootball_ncaaf"
+    return None
+
+
+def _full_game_market(raw_market: Mapping[str, Any]) -> str | None:
+    if raw_market.get("playerProp"):
+        return None
+    period = canonical_token(str(raw_market.get("period", "")))
+    name = canonical_token(str(raw_market.get("marketName", "")))
+    market_type = canonical_token(str(raw_market.get("marketType", "")))
+    full_game_periods = {"", "result", "fulltime", "full-time", "game", "match"}
+    if period not in full_game_periods:
+        return None
+    if market_type in {"moneyline", "h2h", "1x2"} or any(
+        token in name for token in ("moneyline", "match-winner", "full-time-result")
+    ):
+        return "h2h"
+    if market_type in {"spread", "spreads", "handicap", "point-spread"}:
+        return "spreads"
+    if market_type in {"total", "totals", "over-under"}:
+        return "totals"
+    return None
+
+
+def _outcome_name(raw_name: str, market_key: str, event_home: str, event_away: str) -> str | None:
+    token = canonical_token(raw_name)
+    if market_key in {"h2h", "spreads"}:
+        if token in {"1", "home", "participant-1", "team-1"}:
+            return event_home
+        if token in {"2", "away", "participant-2", "team-2"}:
+            return event_away
+        if token in {canonical_token(event_home), canonical_token(event_away)}:
+            return raw_name
+        return None
+    if market_key == "totals":
+        if token.startswith("over"):
+            return "Over"
+        if token.startswith("under"):
+            return "Under"
+    return None
+
+
+@dataclass(slots=True)
+class OddsPapiProvider:
+    api_key: str
+    bookmaker_slugs: tuple[str, ...] = (
+        "playnow",
+        "betway",
+        "pinnacle",
+        "circasports",
+        "bet365",
+        "betmgm",
+        "caesars",
+        "draftkings",
+        "fanduel",
+        "betrivers",
+    )
+    bookmaker_cooldown_seconds: float = 1.05
+    timeout_seconds: float = 30.0
+    base_url: str = "https://api.oddspapi.io/v4"
+    session: requests.Session = field(default_factory=requests.Session)
+    tournament_ids: dict[str, int] = field(default_factory=dict)
+    market_catalog: dict[str, dict[str, Any]] = field(default_factory=dict)
+    identity_resolver: IdentityResolver = field(default_factory=IdentityResolver)
+    market_normalizer: MarketNormalizer = field(default_factory=MarketNormalizer)
+    request_count: int = field(default=0, init=False)
+
+    @property
+    def provider_id(self) -> str:
+        return "oddspapi"
+
+    def fetch_snapshot(
+        self,
+        league_keys: Sequence[str],
+        market_keys: Sequence[str],
+    ) -> OddsSnapshot:
+        fetched_at = datetime.now(UTC)
+        requested_leagues = tuple(dict.fromkeys(league_keys))
+        requested_markets = tuple(dict.fromkeys(market_keys))
+        unsupported_leagues = set(requested_leagues) - FOOTBALL_LEAGUES.keys()
+        unsupported_markets = set(requested_markets) - FOOTBALL_MARKETS.keys()
+        if unsupported_leagues:
+            raise OddsPapiError(f"Unsupported league keys: {sorted(unsupported_leagues)}")
+        if unsupported_markets:
+            raise OddsPapiError(f"Unsupported market keys: {sorted(unsupported_markets)}")
+        if not requested_leagues or not requested_markets:
+            raise OddsPapiError("Select at least one league and one market before refreshing.")
+        requested_bookmakers = tuple(dict.fromkeys(self.bookmaker_slugs))
+        if not requested_bookmakers:
+            raise OddsPapiError("Enable at least one sportsbook before refreshing.")
+
+        self._ensure_tournaments(requested_leagues)
+        self._ensure_market_catalog()
+        tournament_ids = [str(self.tournament_ids[key]) for key in requested_leagues]
+        raw_events: list[Mapping[str, Any]] = []
+        for index, bookmaker in enumerate(requested_bookmakers):
+            if index and self.bookmaker_cooldown_seconds > 0:
+                sleep(self.bookmaker_cooldown_seconds)
+            payload = self._request(
+                "odds-by-tournaments",
+                {
+                    "bookmaker": bookmaker,
+                    "tournamentIds": ",".join(tournament_ids),
+                    "language": "en",
+                    "verbosity": 3,
+                    "oddsFormat": "decimal",
+                },
+            )
+            raw_events.extend(self._event_list(payload))
+
+        sports = {}
+        leagues = {}
+        events = {}
+        quotes: list[Quote] = []
+        league_by_tournament = {
+            tournament_id: key for key, tournament_id in self.tournament_ids.items()
+        }
+        for raw_event in raw_events:
+            tournament_id = int(raw_event.get("tournamentId", -1))
+            league_key = league_by_tournament.get(tournament_id)
+            if league_key not in requested_leagues:
+                continue
+            config = FOOTBALL_LEAGUES[league_key]
+            sport, league = make_sport_and_league(
+                config.sport_id,
+                config.sport_name,
+                config.league_id,
+                config.league_name,
+            )
+            sports[sport.id] = sport
+            leagues[league.id] = league
+            event, event_quotes = self._normalize_event(
+                raw_event,
+                league,
+                fetched_at,
+                set(requested_markets),
+            )
+            events[event.id] = event
+            quotes.extend(event_quotes)
+
+        return OddsSnapshot(
+            provider_id=self.provider_id,
+            sports=tuple(sports.values()),
+            leagues=tuple(leagues.values()),
+            events=tuple(events.values()),
+            quotes=tuple(quotes),
+            fetched_at=fetched_at,
+        )
+
+    def _ensure_tournaments(self, league_keys: Sequence[str]) -> None:
+        missing = [key for key in league_keys if key not in self.tournament_ids]
+        if not missing:
+            return
+        payload = self._request(
+            "tournaments",
+            {"sportId": AMERICAN_FOOTBALL_SPORT_ID, "language": "en"},
+        )
+        for raw in self._event_list(payload):
+            key = _league_key(str(raw.get("tournamentName", "")))
+            if key and raw.get("tournamentId") is not None:
+                self.tournament_ids[key] = int(raw["tournamentId"])
+        still_missing = [key for key in league_keys if key not in self.tournament_ids]
+        if still_missing:
+            labels = [FOOTBALL_LEAGUES[key].league_name for key in still_missing]
+            raise OddsPapiError(f"OddsPapi did not return tournament IDs for: {', '.join(labels)}")
+
+    def _ensure_market_catalog(self) -> None:
+        if self.market_catalog:
+            return
+        payload = self._request("markets", {"language": "en"})
+        for raw in self._event_list(payload):
+            if int(raw.get("sportId", -1)) != AMERICAN_FOOTBALL_SPORT_ID:
+                continue
+            market_id = raw.get("marketId")
+            if market_id is not None:
+                self.market_catalog[str(market_id)] = dict(raw)
+        if not self.market_catalog:
+            raise OddsPapiError("OddsPapi returned no American football market definitions.")
+
+    def _request(self, endpoint: str, params: Mapping[str, object]) -> object:
+        request_params = {"apiKey": self.api_key}
+        request_params.update({key: str(value) for key, value in params.items()})
+        self.request_count += 1
+        response = self.session.get(
+            f"{self.base_url}/{endpoint}",
+            params=request_params,
+            timeout=self.timeout_seconds,
+        )
+        try:
+            response.raise_for_status()
+        except requests.HTTPError as exc:
+            detail = response.text[:300]
+            raise OddsPapiError(f"OddsPapi returned {response.status_code}: {detail}") from exc
+        try:
+            return response.json()
+        except requests.JSONDecodeError as exc:
+            raise OddsPapiError("OddsPapi returned an invalid JSON response.") from exc
+
+    @staticmethod
+    def _event_list(payload: object) -> list[Mapping[str, Any]]:
+        candidate = payload
+        if isinstance(payload, Mapping):
+            candidate = payload.get("data", payload.get("fixtures", payload))
+        if isinstance(candidate, Mapping):
+            return [candidate]
+        if not isinstance(candidate, list):
+            raise OddsPapiError("OddsPapi response was not a list of records.")
+        return [item for item in candidate if isinstance(item, Mapping)]
+
+    def _normalize_event(
+        self,
+        raw: Mapping[str, Any],
+        league: Any,
+        fetched_at: datetime,
+        requested_markets: set[str],
+    ) -> tuple[Any, list[Quote]]:
+        home_name = str(raw.get("participant1Name", "")).strip()
+        away_name = str(raw.get("participant2Name", "")).strip()
+        if not home_name or not away_name:
+            raise NormalizationError("OddsPapi fixture is missing participant names")
+        home = self.identity_resolver.participant(league, home_name)
+        away = self.identity_resolver.participant(league, away_name)
+        start_time = parse_timestamp(raw.get("startTime"), fetched_at)
+        event = self.identity_resolver.event(league, start_time, home, away)
+        source_event_id = str(raw.get("fixtureId", "")) or None
+        result: list[Quote] = []
+
+        raw_books = raw.get("bookmakerOdds", {})
+        if not isinstance(raw_books, Mapping):
+            return event, result
+        for book_slug_value, raw_book_value in raw_books.items():
+            if not isinstance(raw_book_value, Mapping):
+                continue
+            if raw_book_value.get("bookmakerIsActive") is False or raw_book_value.get("suspended"):
+                continue
+            book_slug = str(book_slug_value)
+            sportsbook = Sportsbook(
+                id=stable_id("sportsbook", self.provider_id, book_slug),
+                name=_friendly_book_name(book_slug),
+            )
+            raw_markets = raw_book_value.get("markets", {})
+            if not isinstance(raw_markets, Mapping):
+                continue
+            for market_id_value, raw_market_value in raw_markets.items():
+                if (
+                    not isinstance(raw_market_value, Mapping)
+                    or raw_market_value.get("marketActive") is False
+                ):
+                    continue
+                catalog = self.market_catalog.get(str(market_id_value))
+                if not catalog:
+                    continue
+                provider_market_key = _full_game_market(catalog)
+                if provider_market_key not in requested_markets:
+                    continue
+                definition = FOOTBALL_MARKETS[provider_market_key]
+                handicap = catalog.get("handicap")
+                outcome_catalog = {
+                    str(item.get("outcomeId")): str(item.get("outcomeName", ""))
+                    for item in catalog.get("outcomes", [])
+                    if isinstance(item, Mapping)
+                }
+                raw_outcomes = raw_market_value.get("outcomes", {})
+                if not isinstance(raw_outcomes, Mapping):
+                    continue
+                for outcome_id_value, raw_outcome_value in raw_outcomes.items():
+                    if not isinstance(raw_outcome_value, Mapping):
+                        continue
+                    normalized_name = _outcome_name(
+                        outcome_catalog.get(str(outcome_id_value), ""),
+                        provider_market_key,
+                        event.home.name,
+                        event.away.name,
+                    )
+                    if normalized_name is None:
+                        continue
+                    players = raw_outcome_value.get("players", {})
+                    if not isinstance(players, Mapping):
+                        continue
+                    for raw_price_value in players.values():
+                        if (
+                            not isinstance(raw_price_value, Mapping)
+                            or raw_price_value.get("active") is False
+                        ):
+                            continue
+                        if raw_price_value.get("playerName"):
+                            continue
+                        if raw_price_value.get("mainLine") is False:
+                            continue
+                        try:
+                            point: object | None = handicap
+                            if (
+                                provider_market_key == "spreads"
+                                and normalized_name == event.away.name
+                            ):
+                                point = -decimal_value(handicap)
+                            outcome = self.market_normalizer.normalize_outcome(
+                                event,
+                                definition,
+                                normalized_name,
+                                point,
+                            )
+                            price: Decimal = decimal_value(raw_price_value.get("price"))
+                            if price <= Decimal("1"):
+                                continue
+                        except (NormalizationError, ValueError):
+                            continue
+                        result.append(
+                            Quote(
+                                provider_id=self.provider_id,
+                                sportsbook=sportsbook,
+                                outcome=outcome,
+                                decimal_odds=price,
+                                # An active snapshot verifies that this price is currently offered.
+                                # OddsPapi's changedAt is the last price movement, which can be old
+                                # even when a still-current line was just fetched.
+                                source_updated_at=fetched_at,
+                                observed_at=fetched_at,
+                                source_event_id=source_event_id,
+                            )
+                        )
+        return event, result
