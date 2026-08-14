@@ -233,6 +233,12 @@ def _inject_theme() -> None:
         .demo-badge { background:#382a12; color:#ffd180; border-color:#785c24; }
         .section-kicker { color:#8290a8; text-transform:uppercase; letter-spacing:.12em;
             font-size:.72rem; font-weight:700; margin-bottom:.2rem; }
+        .st-key-header_odds_status [data-testid="stAlert"] {
+            border-radius:12px; padding:.7rem .8rem;
+        }
+        .st-key-header_odds_status [data-testid="stAlert"] p {
+            font-size:.78rem; line-height:1.3;
+        }
         .st-key-top_opportunity {
             background:
                 radial-gradient(circle at 88% 5%, rgba(57,217,138,.16), transparent 34%),
@@ -332,7 +338,7 @@ def _inject_theme() -> None:
     )
 
 
-def _render_page_header(mode: str) -> list[str]:
+def _render_page_header(mode: str) -> tuple[list[str], Any]:
     badge_class = "demo-badge" if mode == "Demo" else "terminal-badge"
     badge_text = (
         "DEMO MARKET"
@@ -341,12 +347,16 @@ def _render_page_header(mode: str) -> list[str]:
         if mode == "OddsPapi Free"
         else "LIVE MARKET"
     )
-    st.markdown(
-        f'<span class="terminal-badge {badge_class}">{badge_text}</span>',
-        unsafe_allow_html=True,
-    )
-    st.title("Advantage Betting Terminal")
-    st.caption("PlayNow and Betway value versus the market — with secondary arbitrage tools")
+    title_column, status_column = st.columns([4.8, 2], vertical_alignment="center")
+    with title_column:
+        st.markdown(
+            f'<span class="terminal-badge {badge_class}">{badge_text}</span>',
+            unsafe_allow_html=True,
+        )
+        st.title("Advantage Betting Terminal")
+        st.caption("PlayNow and Betway value versus the market — with secondary arbitrage tools")
+    with status_column:
+        status_container = st.container(key="header_odds_status")
     filter_label, filter_control = st.columns([1.1, 5])
     filter_label.markdown("**🏈 Football leagues**")
     selected = filter_control.pills(
@@ -358,7 +368,7 @@ def _render_page_header(mode: str) -> list[str]:
         key="top_league_filter",
         label_visibility="collapsed",
     )
-    return list(selected or LEAGUE_ICONS)
+    return list(selected or LEAGUE_ICONS), status_container
 
 
 def _market_label(market: MarketKey) -> str:
@@ -413,19 +423,21 @@ def _render_odds_status(
     quotes: tuple[Quote, ...],
     fresh_quotes: tuple[Quote, ...],
     as_of: datetime,
+    container: Any | None = None,
 ) -> None:
+    target = container if container is not None else st
     if not quotes:
-        st.info("No saved odds are available yet. Use Refresh latest odds to load the board.")
+        target.info("No saved odds are available yet. Use Refresh latest odds to load the board.")
         return
     last_refresh = max(quote.observed_at for quote in quotes)
     timestamp = last_refresh.astimezone().strftime("%a %b %d at %I:%M:%S %p")
     age = _elapsed_label(last_refresh, as_of)
     if len(fresh_quotes) == len(quotes):
-        st.success(f"FRESH ODDS · Last refreshed {timestamp} ({age})", icon="✅")
+        target.success(f"FRESH ODDS · Last refreshed {timestamp} ({age})", icon="✅")
     elif fresh_quotes:
-        st.warning(f"PARTLY STALE ODDS · Last refreshed {timestamp} ({age})", icon="⚠️")
+        target.warning(f"PARTLY STALE ODDS · Last refreshed {timestamp} ({age})", icon="⚠️")
     else:
-        st.warning(f"STALE ODDS · Last refreshed {timestamp} ({age})", icon="⚠️")
+        target.warning(f"STALE ODDS · Last refreshed {timestamp} ({age})", icon="⚠️")
 
 
 def _load_defaults(repository: QuoteRepository) -> None:
@@ -1072,7 +1084,6 @@ def _render_overview(
     sportsbook_names: list[str],
 ) -> None:
     _render_priority_value_bets(values, event_map, odds_format, as_of)
-    _render_odds_status(quotes, fresh_quotes, as_of)
     refresh_plans = plan_refreshes(events, as_of=as_of)
     st.markdown('<div class="section-kicker">Market pulse</div>', unsafe_allow_html=True)
     metric_columns = st.columns(5)
@@ -1369,7 +1380,8 @@ def run() -> None:
         key=_book_sort_key,
     )
     controls = _sidebar(repository, available_books, is_admin=is_admin)
-    controls["active_leagues"] = _render_page_header(str(controls["mode"]))
+    active_leagues, header_odds_status = _render_page_header(str(controls["mode"]))
+    controls["active_leagues"] = active_leagues
 
     refresh_notice = st.session_state.pop("refresh_notice", None)
     if refresh_notice:
@@ -1532,6 +1544,7 @@ def run() -> None:
         candidate_sportsbooks=PRIORITY_BOOKS,
         include_stale=True,
     )
+    _render_odds_status(quotes, fresh_quotes, as_of, container=header_odds_status)
 
     tab_names = ["Best Bets", "All Tools", "Games", "Movement"]
     if is_admin:
