@@ -239,6 +239,17 @@ def _inject_theme() -> None:
         .st-key-header_odds_status [data-testid="stAlert"] p {
             font-size:.78rem; line-height:1.3;
         }
+        .st-key-header_dashboard {
+            margin:.2rem 0 .35rem;
+        }
+        .st-key-header_dashboard div[data-testid="stMetric"] {
+            min-height:72px; padding:.65rem .9rem;
+            background:linear-gradient(135deg, #111a29, #0c1420);
+            border-color:#28364b;
+        }
+        .st-key-header_dashboard div[data-testid="stMetricValue"] {
+            font-size:1.35rem;
+        }
         .st-key-top_opportunity {
             background:
                 radial-gradient(circle at 88% 5%, rgba(57,217,138,.16), transparent 34%),
@@ -338,7 +349,7 @@ def _inject_theme() -> None:
     )
 
 
-def _render_page_header(mode: str) -> tuple[list[str], Any]:
+def _render_page_header(mode: str) -> tuple[list[str], Any, Any]:
     badge_class = "demo-badge" if mode == "Demo" else "terminal-badge"
     badge_text = (
         "DEMO MARKET"
@@ -357,6 +368,7 @@ def _render_page_header(mode: str) -> tuple[list[str], Any]:
         st.caption("PlayNow and Betway value versus the market — with secondary arbitrage tools")
     with status_column:
         status_container = st.container(key="header_odds_status")
+    dashboard_container = st.container(key="header_dashboard")
     filter_label, filter_control = st.columns([1.1, 5])
     filter_label.markdown("**🏈 Football leagues**")
     selected = filter_control.pills(
@@ -368,7 +380,22 @@ def _render_page_header(mode: str) -> tuple[list[str], Any]:
         key="top_league_filter",
         label_visibility="collapsed",
     )
-    return list(selected or LEAGUE_ICONS), status_container
+    return list(selected or LEAGUE_ICONS), status_container, dashboard_container
+
+
+def _render_header_dashboard(
+    container: Any,
+    quotes: tuple[Quote, ...],
+    values: tuple[ValueOpportunity, ...],
+) -> None:
+    minimum_ev = Decimal(str(st.session_state["min_ev"])) / Decimal("100")
+    upcoming_games = len({quote.outcome.market.event_id for quote in quotes})
+    sportsbook_count = len({quote.sportsbook.id for quote in quotes})
+    value_bet_count = sum(item.expected_value >= minimum_ev for item in values)
+    metric_columns = container.columns(3)
+    metric_columns[0].metric("Upcoming games", f"{upcoming_games:,}")
+    metric_columns[1].metric("Sportsbooks", sportsbook_count)
+    metric_columns[2].metric("+EV bets", value_bet_count)
 
 
 def _market_label(market: MarketKey) -> str:
@@ -1075,7 +1102,6 @@ def _render_priority_value_bets(
                 )
 def _render_overview(
     quotes: tuple[Quote, ...],
-    fresh_quotes: tuple[Quote, ...],
     events: tuple[Event, ...],
     values: tuple[ValueOpportunity, ...],
     event_map: dict[str, Event],
@@ -1085,18 +1111,6 @@ def _render_overview(
 ) -> None:
     _render_priority_value_bets(values, event_map, odds_format, as_of)
     refresh_plans = plan_refreshes(events, as_of=as_of)
-    st.markdown('<div class="section-kicker">Market pulse</div>', unsafe_allow_html=True)
-    metric_columns = st.columns(5)
-    metric_columns[0].metric("Odds shown", f"{len(quotes):,}")
-    metric_columns[1].metric("Fresh odds", f"{len(fresh_quotes):,}")
-    upcoming_count = len({quote.outcome.market.event_id for quote in quotes})
-    metric_columns[2].metric("Upcoming games", upcoming_count)
-    metric_columns[3].metric("Sportsbooks", len({quote.sportsbook.id for quote in quotes}))
-    minimum_ev = Decimal(str(st.session_state["min_ev"])) / Decimal("100")
-    metric_columns[4].metric(
-        "+EV bets", len(tuple(item for item in values if item.expected_value >= minimum_ev))
-    )
-
     _render_event_board(quotes, events, sportsbook_names, odds_format)
 
     with st.expander(f"Refresh timing · {len(refresh_plans)} suggested checks", expanded=False):
@@ -1380,7 +1394,9 @@ def run() -> None:
         key=_book_sort_key,
     )
     controls = _sidebar(repository, available_books, is_admin=is_admin)
-    active_leagues, header_odds_status = _render_page_header(str(controls["mode"]))
+    active_leagues, header_odds_status, header_dashboard = _render_page_header(
+        str(controls["mode"])
+    )
     controls["active_leagues"] = active_leagues
 
     refresh_notice = st.session_state.pop("refresh_notice", None)
@@ -1545,6 +1561,7 @@ def run() -> None:
         include_stale=True,
     )
     _render_odds_status(quotes, fresh_quotes, as_of, container=header_odds_status)
+    _render_header_dashboard(header_dashboard, quotes, values)
 
     tab_names = ["Best Bets", "All Tools", "Games", "Movement"]
     if is_admin:
@@ -1554,7 +1571,6 @@ def run() -> None:
     with overview_tab:
         _render_overview(
             quotes,
-            fresh_quotes,
             events,
             values,
             event_map,
