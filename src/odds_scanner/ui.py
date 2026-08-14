@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from functools import lru_cache
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 import pandas as pd
@@ -104,6 +105,7 @@ MARKET_NAMES = {
     MarketKind.PLAYER_PROP: "Player prop",
 }
 LEAGUE_ICONS = {"NFL": "🏈", "NCAAF": "🏈", "CFL": "🏈"}
+_DEMO_SEED_LOCK = Lock()
 
 
 @dataclass(frozen=True, slots=True)
@@ -703,9 +705,11 @@ def _load_defaults(repository: QuoteRepository) -> None:
 def _seed_demo(repository: QuoteRepository) -> None:
     if st.session_state.get("demo_seeded"):
         return
-    for snapshot in generate_demo_snapshots():
-        repository.save_snapshot(snapshot)
-    st.session_state["demo_seeded"] = True
+    with _DEMO_SEED_LOCK:
+        if not repository.load_latest_quotes("demo"):
+            for snapshot in generate_demo_snapshots():
+                repository.save_snapshot(snapshot)
+        st.session_state["demo_seeded"] = True
 
 
 def _sidebar(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from decimal import Decimal
 
@@ -88,6 +89,36 @@ def test_latest_quotes_match_the_most_recent_complete_snapshot(tmp_path, now, ev
     )
 
     assert repository.load_latest_quotes("provider") == (refreshed_home,)
+
+
+def test_sqlite_configures_wal_and_waits_for_busy_database(tmp_path):
+    repository = SQLiteQuoteRepository(tmp_path / "reliable.db")
+
+    with repository._connection() as connection:
+        journal_mode = connection.execute("PRAGMA journal_mode").fetchone()[0]
+        busy_timeout = connection.execute("PRAGMA busy_timeout").fetchone()[0]
+
+    assert journal_mode == "wal"
+    assert busy_timeout == 30_000
+
+
+def test_sqlite_serializes_concurrent_snapshot_writes(tmp_path, now, event, league):
+    market = make_market()
+    quote = make_quote(market, OutcomeSide.HOME, "2.10", now, book="alpha")
+    snapshot = OddsSnapshot(
+        provider_id="provider",
+        sports=(Sport("american-football", "American Football"),),
+        leagues=(league,),
+        events=(event,),
+        quotes=(quote,),
+        fetched_at=now,
+    )
+    repository = SQLiteQuoteRepository(tmp_path / "concurrent.db")
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        list(executor.map(repository.save_snapshot, (snapshot,) * 12))
+
+    assert repository.load_latest_quotes("provider") == (quote,)
 
 
 def test_settings_watchlist_and_bet_tracker_round_trip(tmp_path, now, event):

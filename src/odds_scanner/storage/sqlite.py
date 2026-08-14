@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
+from threading import RLock
 
 from odds_scanner.domain import (
     BetStatus,
@@ -113,14 +114,19 @@ CREATE TABLE IF NOT EXISTS watchlist (
 class SQLiteQuoteRepository:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
+        self._write_lock = RLock()
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connection() as connection:
+        with self._write_lock, self._connection() as connection:
+            connection.execute("PRAGMA journal_mode = WAL")
             connection.executescript(SCHEMA)
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(self.path)
+        connection = sqlite3.connect(self.path, timeout=30.0)
         connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA busy_timeout = 30000")
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA synchronous = NORMAL")
         try:
             yield connection
             connection.commit()
@@ -131,7 +137,7 @@ class SQLiteQuoteRepository:
             connection.close()
 
     def save_snapshot(self, snapshot: OddsSnapshot) -> None:
-        with self._connection() as connection:
+        with self._write_lock, self._connection() as connection:
             connection.executemany(
                 "INSERT INTO sports(id, name) VALUES (?, ?) "
                 "ON CONFLICT(id) DO UPDATE SET name=excluded.name",
@@ -319,7 +325,7 @@ class SQLiteQuoteRepository:
         )
 
     def save_setting(self, key: str, value: str) -> None:
-        with self._connection() as connection:
+        with self._write_lock, self._connection() as connection:
             connection.execute(
                 "INSERT INTO user_settings(key, value) VALUES (?, ?) "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -332,7 +338,7 @@ class SQLiteQuoteRepository:
         return {str(row["key"]): str(row["value"]) for row in rows}
 
     def add_bet(self, bet: TrackedBet) -> int:
-        with self._connection() as connection:
+        with self._write_lock, self._connection() as connection:
             cursor = connection.execute(
                 "INSERT INTO tracked_bets(created_at, event_id, event_name, market_label, "
                 "selection, sportsbook, decimal_odds, stake, status, profit_loss, notes) "
@@ -381,7 +387,7 @@ class SQLiteQuoteRepository:
         )
 
     def update_bet(self, bet_id: int, status: BetStatus, profit_loss: Decimal | None) -> None:
-        with self._connection() as connection:
+        with self._write_lock, self._connection() as connection:
             connection.execute(
                 "UPDATE tracked_bets SET status = ?, profit_loss = ? WHERE id = ?",
                 (status.value, str(profit_loss) if profit_loss is not None else None, bet_id),
@@ -393,7 +399,7 @@ class SQLiteQuoteRepository:
         return frozenset(str(row["event_id"]) for row in rows)
 
     def set_event_watched(self, event_id: str, watched: bool, created_at: datetime) -> None:
-        with self._connection() as connection:
+        with self._write_lock, self._connection() as connection:
             if watched:
                 connection.execute(
                     "INSERT OR IGNORE INTO watchlist(event_id, created_at) VALUES (?, ?)",
