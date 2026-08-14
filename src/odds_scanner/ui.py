@@ -19,7 +19,6 @@ from odds_scanner.analytics import (
     ValueOpportunity,
     detect_consensus_value,
     detect_middles,
-    plan_refreshes,
 )
 from odds_scanner.domain import (
     ArbitrageOpportunity,
@@ -290,13 +289,17 @@ def _inject_theme() -> None:
         div[class*="st-key-value_opportunity_"] {
             background:linear-gradient(135deg, #0f1827 0%, #0b121d 72%, #0d1b18 100%);
             border:1px solid #26354b !important; border-radius:12px;
-            padding:.7rem .8rem; margin:.15rem 0;
+            padding:.15rem .55rem .55rem; margin:.35rem 0;
             transition:border-color .16s ease, box-shadow .16s ease, transform .16s ease;
         }
         div[class*="st-key-value_opportunity_"]:hover {
             border-color:#2a8a5d !important;
             box-shadow:0 8px 24px rgba(0,0,0,.2), inset 3px 0 #39d98a;
             transform:translateY(-1px);
+        }
+        div[class*="st-key-value_opportunity_"]:has(details[open]) {
+            border-color:#2a8a5d !important;
+            box-shadow:0 8px 24px rgba(0,0,0,.22), inset 3px 0 #39d98a;
         }
         div[class*="st-key-value_opportunity_"] [data-testid="stLinkButton"] a {
             min-height:45px; font-weight:850; letter-spacing:.01em;
@@ -307,22 +310,28 @@ def _inject_theme() -> None:
             background:#39d98a !important; border-color:#77efb2 !important;
             box-shadow:0 8px 24px rgba(57,217,138,.3);
         }
-        .opportunity-rank {
-            display:flex; align-items:center; justify-content:center; width:34px; height:34px;
-            border-radius:50%; background:#162337; border:1px solid #32425b;
-            color:#9eabc0; font-size:.78rem; font-weight:850;
+        div[class*="st-key-value_opportunity_"] [data-testid="stExpander"] {
+            border:0; background:transparent;
         }
-        .opportunity-pick {
-            color:#f8fafc; font-size:1.05rem; line-height:1.18; font-weight:850;
-            letter-spacing:-.015em; margin-bottom:.16rem;
+        div[class*="st-key-value_opportunity_"] [data-testid="stExpander"] summary {
+            padding:.65rem .25rem; border-radius:9px;
         }
-        .opportunity-event { color:#9aa7ba; font-size:.78rem; line-height:1.3; }
-        .opportunity-label {
-            color:#7f8ca1; font-size:.66rem; font-weight:750; letter-spacing:.08em;
-            text-transform:uppercase; margin-bottom:.12rem;
+        div[class*="st-key-value_opportunity_"] [data-testid="stExpander"]:focus-within,
+        div[class*="st-key-value_opportunity_"] [data-testid="stExpander"] details:focus-within,
+        div[class*="st-key-value_opportunity_"] [data-testid="stExpander"] summary:focus,
+        div[class*="st-key-value_opportunity_"] [data-testid="stExpander"] summary:focus-visible {
+            border-color:#39d98a !important; outline-color:#39d98a !important;
+            box-shadow:0 0 0 1px #39d98a !important;
         }
-        .opportunity-value { color:#f2f5f9; font-size:.94rem; font-weight:800; }
-        .opportunity-edge { color:#55e69c; }
+        div[class*="st-key-value_opportunity_"] [data-testid="stExpander"] summary p {
+            color:#f3f6fa; font-size:.96rem; font-weight:820; letter-spacing:-.01em;
+        }
+        .value-bet-pick {
+            color:#f8fafc; font-size:1.25rem; line-height:1.15; font-weight:850;
+            letter-spacing:-.025em; margin:.05rem 0 .25rem;
+        }
+        .value-bet-event { color:#a7b3c4; font-size:.84rem; }
+        .value-bet-proof { color:#8492a6; font-size:.76rem; padding-top:.15rem; }
         .risk-note { color:#94a3b8; font-size:.78rem; }
         .stDataFrame { border: 1px solid #202b3d; border-radius: 8px; overflow:hidden; }
         [data-testid="stExpander"] { border-color: #202b3d; background: #0b111c; }
@@ -1050,8 +1059,12 @@ def _render_priority_value_bets(
             unsafe_allow_html=True,
         )
 
-    st.markdown("#### More +EV opportunities")
-    for rank, item in enumerate(qualifying[:20], start=1):
+    if len(qualifying) <= 1:
+        return
+
+    st.markdown("#### More +EV bets")
+    st.caption("Open any bet for the complete price and consensus breakdown.")
+    for rank, item in enumerate(qualifying[1:20], start=2):
         item_event = event_map.get(item.quote.outcome.market.event_id)
         item_event_name = (
             item_event.name if item_event is not None else item.quote.outcome.market.event_id
@@ -1074,80 +1087,75 @@ def _render_priority_value_bets(
                 f"{item_event.start_time.astimezone().strftime('%a %b %d, %I:%M %p')}"
             )
 
-        with st.container(border=True, key=f"value_opportunity_{rank}"):
-            rank_column, pick_column, price_column, edge_column, fair_column, bet_column = (
-                st.columns(
-                    [0.35, 3.05, 1.2, 1.0, 1.05, 1.45],
-                    vertical_alignment="center",
-                )
+        expander_label = (
+            f"#{rank} · BET {item_pick.upper()} · {item_book} {item_odds} · "
+            f"{item.expected_value:.2%} +EV"
+        )
+        with st.container(key=f"value_opportunity_{rank}"), st.expander(
+            expander_label, expanded=False
+        ):
+            detail_column, action_column = st.columns(
+                [3.3, 1.3], vertical_alignment="center"
             )
-            rank_column.markdown(
-                f'<div class="opportunity-rank">#{rank}</div>',
+            detail_column.markdown(
+                f'<div class="value-bet-pick">BET {html.escape(item_pick.upper())}</div>'
+                f'<div class="value-bet-event">{html.escape(event_detail)}</div>',
                 unsafe_allow_html=True,
             )
-            pick_column.markdown(
-                f'<div class="opportunity-pick">BET {html.escape(item_pick.upper())}</div>'
-                f'<div class="opportunity-event">{html.escape(event_detail)} · '
+            with action_column:
+                st.caption("BEST AVAILABLE PRICE")
+                st.markdown(f"**{item_book} · {item_odds}**")
+                if item_url:
+                    st.link_button(
+                        f"Bet now on {item_book} · {item_odds}",
+                        item_url,
+                        type="primary",
+                        icon=":material/open_in_new:",
+                        width="stretch",
+                    )
+
+            item_metrics = st.columns(4)
+            item_metrics[0].metric(
+                "Bet at",
+                item_book,
+                help="The sportsbook offering the recommended price.",
+            )
+            item_metrics[1].metric(
+                "Offered odds",
+                item_odds,
+                help="The actual price currently offered by the sportsbook.",
+            )
+            item_metrics[2].metric(
+                "Estimated edge",
+                f"{item.expected_value:.2%}",
+                help="Estimated long-run return relative to the consensus fair probability.",
+            )
+            item_metrics[3].metric(
+                "Consensus fair odds",
+                item_fair_odds,
+                help=(
+                    "A margin-free estimate derived from the other enabled sportsbooks. "
+                    "It is not an offered betting price."
+                ),
+            )
+            st.markdown(
+                '<div class="value-bet-proof">'
                 f"Compared with {html.escape(', '.join(item.reference_sportsbooks))} · "
-                f"Updated {_age_label(item.quote, as_of)} ago</div>",
+                f"Price updated {_age_label(item.quote, as_of)} ago · "
+                "Confirm the price before betting"
+                "</div>",
                 unsafe_allow_html=True,
             )
-            price_column.markdown(
-                '<div class="opportunity-label">Best price</div>'
-                f'<div class="opportunity-value">{html.escape(item_book)} · '
-                f"{html.escape(item_odds)}</div>",
-                unsafe_allow_html=True,
-            )
-            edge_column.markdown(
-                '<div class="opportunity-label">Est. edge</div>'
-                f'<div class="opportunity-value opportunity-edge">{item.expected_value:.2%}</div>',
-                unsafe_allow_html=True,
-            )
-            fair_column.markdown(
-                '<div class="opportunity-label">Fair odds</div>'
-                f'<div class="opportunity-value">{html.escape(item_fair_odds)}</div>',
-                unsafe_allow_html=True,
-            )
-            if item_url:
-                bet_column.link_button(
-                    f"Bet now · {item_odds}",
-                    item_url,
-                    type="primary",
-                    icon=":material/open_in_new:",
-                    width="stretch",
-                )
+
+
 def _render_overview(
-    quotes: tuple[Quote, ...],
-    events: tuple[Event, ...],
     values: tuple[ValueOpportunity, ...],
     event_map: dict[str, Event],
     as_of: datetime,
     odds_format: str,
-    sportsbook_names: list[str],
 ) -> None:
     _render_priority_value_bets(values, event_map, odds_format, as_of)
-    refresh_plans = plan_refreshes(events, as_of=as_of)
-    _render_event_board(quotes, events, sportsbook_names, odds_format)
 
-    with st.expander(f"Refresh timing · {len(refresh_plans)} suggested checks", expanded=False):
-        st.caption("Useful pre-game windows for spending manual refresh credits.")
-        if refresh_plans:
-            st.dataframe(
-                [
-                    {
-                        "Event": plan.event_name,
-                        "Kickoff": plan.kickoff.astimezone().strftime("%a %b %d, %I:%M %p"),
-                        "Next check": plan.check_at.astimezone().strftime("%a %b %d, %I:%M %p"),
-                        "Window": plan.window,
-                    }
-                    for plan in refresh_plans
-                ],
-                hide_index=True,
-                width="stretch",
-                height=215,
-            )
-        else:
-            st.info("No upcoming games are available for refresh planning.")
 
 def _render_games(
     quotes: tuple[Quote, ...],
@@ -1571,13 +1579,10 @@ def run() -> None:
     overview_tab, opportunities_tab, games_tab, movement_tab = tabs[:4]
     with overview_tab:
         _render_overview(
-            quotes,
-            events,
             values,
             event_map,
             as_of,
             controls["odds_format"],
-            list(controls["active_books"]),
         )
     with opportunities_tab:
         arb_tab, middle_tab, value_tab, best_tab = st.tabs(
