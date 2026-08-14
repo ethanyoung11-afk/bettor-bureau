@@ -1142,7 +1142,13 @@ def _render_event_board(
     watched_event_ids = (
         repository.watched_event_ids() if repository is not None and is_admin else set()
     )
-    for event in available_events:
+    page_size = 10
+    page_count = max(1, (len(available_events) + page_size - 1) // page_size)
+    page = min(max(0, int(st.session_state.get("event_page", 0))), page_count - 1)
+    st.session_state["event_page"] = page
+    page_start = page * page_size
+    page_events = available_events[page_start : page_start + page_size]
+    for event in page_events:
         league = event.league_id.upper()
         icon = LEAGUE_ICONS.get(league, "🏟️")
         local_start = event.start_time.astimezone().strftime("%a %b %d · %I:%M %p")
@@ -1159,6 +1165,36 @@ def _render_event_board(
                     repository.set_event_watched(event.id, not watched, datetime.now(UTC))
                     st.rerun()
             _render_event_odds_matrix(event_quotes, sportsbook_names, odds_format, event)
+
+    showing_from = page_start + 1
+    showing_to = page_start + len(page_events)
+    page_label, previous_column, next_column = st.columns(
+        [8, 1, 1],
+        vertical_alignment="center",
+    )
+    page_label.caption(
+        f"Showing games {showing_from}–{showing_to} of {len(available_events)}"
+    )
+    previous_column.button(
+        "Previous games",
+        icon=":material/chevron_left:",
+        disabled=page == 0,
+        on_click=_set_event_page,
+        args=(page - 1,),
+        width="stretch",
+    )
+    next_column.button(
+        "Next games",
+        icon=":material/chevron_right:",
+        disabled=page >= page_count - 1,
+        on_click=_set_event_page,
+        args=(page + 1,),
+        width="stretch",
+    )
+
+
+def _set_event_page(page: int) -> None:
+    st.session_state["event_page"] = max(0, page)
 
 
 def _sportsbook_toggle_key(mode: str, book: str) -> str:
@@ -1184,6 +1220,10 @@ def _reset_ev_filters() -> None:
     st.session_state["ev_start_window"] = "Any time"
     st.session_state["ev_freshness_filter"] = "Include stale"
     st.session_state["ev_sort_by"] = "EV % (High to Low)"
+
+
+def _set_ev_page(page: int) -> None:
+    st.session_state["ev_page"] = max(0, page)
 
 
 def _render_ev_filter_bar(
@@ -1253,27 +1293,40 @@ def _render_ev_filter_bar(
                 "Only these books can be recommended. All available books still inform the "
                 "broader market comparison."
             )
-            for book in available_books:
-                st.toggle(
-                    f"★ {book}" if book in PRIORITY_BOOKS else book,
-                    value=True,
-                    key=_sportsbook_toggle_key(mode, book),
+            st.caption("Choose as many as you want, then apply once.")
+            with st.form(
+                f"sportsbook_filter_{stable_id('sportsbook-form-v1', mode)}",
+                border=False,
+            ):
+                for book in available_books:
+                    st.toggle(
+                        f"★ {book}" if book in PRIORITY_BOOKS else book,
+                        value=True,
+                        key=_sportsbook_toggle_key(mode, book),
+                    )
+                st.form_submit_button(
+                    "Apply sportsbooks",
+                    type="primary",
+                    width="stretch",
                 )
-            action_columns = st.columns(2)
-            action_columns[0].button(
-                "Select all",
-                on_click=_set_sportsbook_selection,
-                args=(tuple(available_books), mode, True),
-                width="stretch",
-            )
-            action_columns[1].button(
-                "Use all books",
-                on_click=_set_sportsbook_selection,
-                args=(tuple(available_books), mode, False),
-                width="stretch",
-                help="Clears the restriction so every eligible sportsbook may be recommended.",
-            )
-            st.caption("No selections means all eligible sportsbooks.")
+                action_columns = st.columns(2)
+                action_columns[0].form_submit_button(
+                    "Select all",
+                    on_click=_set_sportsbook_selection,
+                    args=(tuple(available_books), mode, True),
+                    width="stretch",
+                )
+                action_columns[1].form_submit_button(
+                    "Use all books",
+                    on_click=_set_sportsbook_selection,
+                    args=(tuple(available_books), mode, False),
+                    width="stretch",
+                    help=(
+                        "Clears the restriction so every eligible sportsbook may be "
+                        "recommended."
+                    ),
+                )
+                st.caption("No selections means all eligible sportsbooks.")
 
         with more_col.popover("More Filters", width="stretch"):
             implied_preset = st.selectbox(
@@ -1693,6 +1746,13 @@ def _render_priority_value_bets(
         st.caption("No additional matching opportunities.")
         return
 
+    page_size = 5
+    page_count = max(1, (len(remaining) + page_size - 1) // page_size)
+    page = min(max(0, int(st.session_state.get("ev_page", 0))), page_count - 1)
+    st.session_state["ev_page"] = page
+    page_start = page * page_size
+    page_values = remaining[page_start : page_start + page_size]
+
     header = (
         '<div class="ev-table-head ev-grid"><span>#</span><span>MATCHUP</span>'
         '<span class="ev-market">MARKET</span><span>BEST ODDS</span>'
@@ -1703,7 +1763,7 @@ def _render_priority_value_bets(
         '<span class="ev-best-book">BEST BOOK</span><span>ACTION</span><span></span></div>'
     )
     rows: list[str] = []
-    for item in remaining[:50]:
+    for item in page_values:
         item_event = event_map[item.quote.outcome.market.event_id]
         item_selection = _selection_label(item.quote, item_event)
         item_market = _market_label(item.quote.outcome.market)
@@ -1747,7 +1807,31 @@ def _render_priority_value_bets(
         f'<div class="ev-table-wrap">{header}{"".join(rows)}</div>',
         unsafe_allow_html=True,
     )
-    st.caption(f"Showing {len(remaining[:50])} of {len(remaining)} additional bets")
+    showing_from = page_start + 1
+    showing_to = page_start + len(page_values)
+    page_label, previous_column, next_column = st.columns(
+        [8, 1, 1],
+        vertical_alignment="center",
+    )
+    page_label.caption(
+        f"Showing {showing_from}–{showing_to} of {len(remaining)} additional bets"
+    )
+    previous_column.button(
+        "Previous",
+        icon=":material/chevron_left:",
+        disabled=page == 0,
+        on_click=_set_ev_page,
+        args=(page - 1,),
+        width="stretch",
+    )
+    next_column.button(
+        "Next",
+        icon=":material/chevron_right:",
+        disabled=page >= page_count - 1,
+        on_click=_set_ev_page,
+        args=(page + 1,),
+        width="stretch",
+    )
 
 
 def _value_comparison_markup(
@@ -2060,15 +2144,13 @@ def run() -> None:
     _load_defaults(repository)
     if not database_url:
         _seed_demo(repository)
-    preload_time = datetime.now(UTC)
-    preload_history = repository.load_quotes_since(preload_time - timedelta(hours=24))
     selected_source = str(st.session_state.get("data_source", "Demo"))
     selected_provider_id = _provider_id(selected_source)
+    preload_quotes = repository.load_latest_quotes(selected_provider_id)
     available_books = sorted(
         {
             quote.sportsbook.name
-            for quote in preload_history
-            if quote.provider_id == selected_provider_id
+            for quote in preload_quotes
         }
         | set(STARTER_BOOKS),
         key=_book_sort_key,
@@ -2186,15 +2268,18 @@ def run() -> None:
         return
 
     as_of = datetime.now(UTC)
-    history_all = repository.load_quotes_since(as_of - timedelta(hours=24))
     provider_id = _provider_id(controls["mode"])
-    history = tuple(quote for quote in history_all if quote.provider_id == provider_id)
-    latest_quotes = repository.load_latest_quotes(provider_id)
+    latest_quotes = (
+        preload_quotes
+        if provider_id == selected_provider_id
+        else repository.load_latest_quotes(provider_id)
+    )
+    quoted_event_ids = {quote.outcome.market.event_id for quote in latest_quotes}
     all_events = tuple(
         event
         for event in repository.load_events()
         if event.start_time > as_of
-        and any(quote.outcome.market.event_id == event.id for quote in latest_quotes)
+        and event.id in quoted_event_ids
     )
     all_event_map = {event.id: event for event in all_events}
     market_kinds = {
@@ -2224,13 +2309,6 @@ def run() -> None:
     events = tuple(event for event in all_events if event.id in selected_event_ids)
     event_map, league_names = _event_maps(events)
 
-    arbs = detect_arbitrage(
-        quotes,
-        bankroll=bankroll,
-        as_of=as_of,
-        max_age=controls["freshness"],
-    )
-    middles = detect_middles(quotes, as_of=as_of, max_age=controls["freshness"])
     ev_filters = _render_ev_filter_bar(
         available_books,
         str(controls["mode"]),
@@ -2261,9 +2339,16 @@ def run() -> None:
     tab_names = ["Best Bets", "All Tools", "Games", "Movement"]
     if is_admin:
         tab_names.extend(["Bet Tracker", "Settings"])
-    tabs = st.tabs(tab_names)
-    overview_tab, opportunities_tab, games_tab, movement_tab = tabs[:4]
-    with overview_tab:
+    active_view = st.segmented_control(
+        "Dashboard section",
+        tab_names,
+        default="Best Bets",
+        key="dashboard_view",
+        label_visibility="collapsed",
+        width="stretch",
+    ) or "Best Bets"
+
+    if active_view == "Best Bets":
         _render_overview(
             filtered_values,
             event_map,
@@ -2271,19 +2356,34 @@ def run() -> None:
             as_of,
             controls["odds_format"],
         )
-    with opportunities_tab:
-        arb_tab, middle_tab, value_tab, best_tab = st.tabs(
-            ["Arbitrage", "Middles", "My sportsbooks +EV", "Best lines"]
-        )
-        with arb_tab:
+    elif active_view == "All Tools":
+        active_tool = st.segmented_control(
+            "Opportunity type",
+            ["Arbitrage", "Middles", "My sportsbooks +EV", "Best lines"],
+            default="Arbitrage",
+            key="opportunity_view",
+            label_visibility="collapsed",
+        ) or "Arbitrage"
+        if active_tool == "Arbitrage":
+            arbs = detect_arbitrage(
+                quotes,
+                bankroll=bankroll,
+                as_of=as_of,
+                max_age=controls["freshness"],
+            )
             _render_arb_detail(arbs, event_map, as_of, controls["min_roi"])
-        with middle_tab:
+        elif active_tool == "Middles":
+            middles = detect_middles(
+                quotes,
+                as_of=as_of,
+                max_age=controls["freshness"],
+            )
             _render_middles(middles, event_map)
-        with value_tab:
+        elif active_tool == "My sportsbooks +EV":
             _render_value(filtered_values, event_map, controls["odds_format"])
-        with best_tab:
+        else:
             _render_best_lines(quotes, event_map, controls["odds_format"])
-    with games_tab:
+    elif active_view == "Games":
         comparison_books = sorted(
             {quote.sportsbook.name for quote in quotes},
             key=_book_sort_key,
@@ -2296,14 +2396,17 @@ def run() -> None:
             repository,
             is_admin=is_admin,
         )
-    with movement_tab:
+    elif active_view == "Movement":
+        history = tuple(
+            quote
+            for quote in repository.load_quotes_since(as_of - timedelta(hours=24))
+            if quote.provider_id == provider_id
+        )
         _render_line_movement(history, events)
-    if is_admin:
-        bets_tab, settings_tab = tabs[4:]
-        with bets_tab:
-            _render_bets(quotes, events, repository)
-        with settings_tab:
-            _render_settings(repository, controls["mode"], controls)
+    elif active_view == "Bet Tracker" and is_admin:
+        _render_bets(quotes, events, repository)
+    elif active_view == "Settings" and is_admin:
+        _render_settings(repository, controls["mode"], controls)
 
     st.divider()
     footer_text = (
