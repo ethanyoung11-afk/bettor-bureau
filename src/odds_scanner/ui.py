@@ -43,13 +43,23 @@ from odds_scanner.opportunities import (
 from odds_scanner.presentation import decimal_to_american, format_odds
 from odds_scanner.providers.base import OddsProvider
 from odds_scanner.providers.demo import DemoOddsProvider, generate_demo_snapshots
-from odds_scanner.providers.odds_api import FOOTBALL_LEAGUES, OddsApiError, OddsApiProvider
-from odds_scanner.providers.oddspapi import OddsPapiError, OddsPapiProvider
-from odds_scanner.service import ScannerService
+from odds_scanner.providers.odds_api import FOOTBALL_LEAGUES, OddsApiProvider
+from odds_scanner.providers.oddspapi import OddsPapiProvider
+from odds_scanner.refresh import (
+    BudgetConfig,
+    FreshnessConfig,
+    OddsRefreshService,
+    RefreshConfig,
+    RefreshDiagnostics,
+    RefreshRequest,
+    RefreshResultStatus,
+    freshness_state,
+)
 from odds_scanner.storage.base import QuoteRepository
 from odds_scanner.storage.sqlite import SQLiteQuoteRepository
 
 LEAGUE_LABELS = {config.league_name: key for key, config in FOOTBALL_LEAGUES.items()}
+LEAGUE_IDS = {config.league_name: config.league_id for config in FOOTBALL_LEAGUES.values()}
 MARKET_LABELS = {
     "Moneyline": "h2h",
     "Spread": "spreads",
@@ -104,7 +114,14 @@ MARKET_NAMES = {
     MarketKind.TOTAL: "Total",
     MarketKind.PLAYER_PROP: "Player prop",
 }
-LEAGUE_ICONS = {"NFL": "🏈", "NCAAF": "🏈", "CFL": "🏈"}
+MARKET_KINDS = {
+    "h2h": MarketKind.MONEYLINE,
+    "spreads": MarketKind.SPREAD,
+    "totals": MarketKind.TOTAL,
+    "player_props": MarketKind.PLAYER_PROP,
+}
+LEAGUE_ICONS = {"NFL": "🏈", "NCAAF": "🏈", "NBA": "🏀", "NHL": "🏒", "CFL": "🏈"}
+CORE_REFRESH_LEAGUES = ("NFL", "NCAAF", "NBA", "NHL")
 _DEMO_SEED_LOCK = Lock()
 
 
@@ -235,6 +252,77 @@ def _record_oddspapi_requests(
     repository.save_setting("oddspapi_usage_month", effective_time.strftime("%Y-%m"))
     repository.save_setting("oddspapi_requests_used", str(used))
     return used, max(0, ODDSPAPI_FREE_CREDITS - used)
+
+
+def _refresh_config(mode: str) -> RefreshConfig:
+    fresh_minutes = int(st.session_state.get("freshness_minutes", 5))
+    warning_minutes = max(15, fresh_minutes)
+    return RefreshConfig(
+        manual_only=True,
+        minimum_ev=Decimal(str(st.session_state.get("min_ev", 2.0))) / Decimal("100"),
+        freshness=FreshnessConfig(
+            fresh_minutes=fresh_minutes,
+            warning_minutes=warning_minutes,
+            stale_minutes=max(30, warning_minutes),
+        ),
+        budget=BudgetConfig(
+            monthly_credit_limit=ODDSPAPI_FREE_CREDITS if mode == "OddsPapi Free" else None
+        ),
+        show_stale_recommendations=True,
+    )
+
+
+def _diagnostic_message(diagnostics: RefreshDiagnostics) -> str:
+    if diagnostics.status is RefreshResultStatus.ALREADY_RUNNING:
+        return "Odds refresh already in progress."
+    if diagnostics.status is RefreshResultStatus.FAILED:
+        return f"Odds update failed: {diagnostics.error_message or 'Unknown provider error'}"
+    return (
+        f"Refresh complete · {diagnostics.events_checked} events · "
+        f"{diagnostics.sportsbooks_checked} books · "
+        f"{diagnostics.new_opportunities} new +EV · "
+        f"{diagnostics.deactivated_opportunities} removed"
+    )
+
+
+def _render_refresh_admin_status(
+    repository: QuoteRepository,
+    mode: str,
+) -> None:
+    provider_id = _provider_id(mode)
+    counts = repository.opportunity_counts(provider_id)
+    usage = repository.api_usage_summary(provider_id, as_of=datetime.now(UTC))
+    last_refresh = usage.last_successful_refresh
+    last_refresh_label = (
+        last_refresh.astimezone().strftime("%I:%M %p").lstrip("0")
+        if last_refresh
+        else "Not yet"
+    )
+    st.markdown(
+        f"**Current recommendations**  \n{counts.active} active · {counts.stale} stale"
+    )
+    st.markdown(f"**Last successful refresh**  \n{last_refresh_label}")
+    st.markdown(
+        f"**API usage tracked by this app**  \n"
+        f"{usage.requests_today} requests today · {usage.requests_this_month} this month"
+    )
+    if usage.last_failed_refresh is not None:
+        failed_label = usage.last_failed_refresh.astimezone().strftime("%b %d, %I:%M %p")
+        st.caption(f"Last failed update: {failed_label}")
+    latest = st.session_state.get("last_refresh_diagnostics")
+    if isinstance(latest, RefreshDiagnostics):
+        if latest.status is RefreshResultStatus.SUCCESS:
+            st.success("Refresh successful")
+            st.caption(
+                f"{latest.events_checked} events · {latest.sportsbooks_checked} books · "
+                f"{latest.new_opportunities} new +EV · "
+                f"{latest.revalidated_opportunities} revalidated · "
+                f"{latest.deactivated_opportunities} removed · "
+                f"{latest.credits_used} credits · {latest.duration_seconds:.1f}s"
+            )
+        elif latest.status is RefreshResultStatus.FAILED:
+            st.error("Odds update failed")
+            st.caption(latest.error_message or "The provider did not return fresh odds.")
 
 
 def _inject_theme() -> None:
@@ -405,6 +493,10 @@ def _inject_theme() -> None:
             font-weight:800; letter-spacing:.04em; text-transform:uppercase;
         }
         .ev-freshness-state.fresh { color:#74ebb0; background:#103824; border:1px solid #24794f; }
+        .ev-freshness-state.aging { color:#ffd38a; background:#382a12; border:1px solid #735822; }
+        .ev-freshness-state.needs-refresh {
+            color:#ffbf69; background:#3d2610; border:1px solid #8a5424;
+        }
         .ev-freshness-state.stale { color:#ffd38a; background:#382a12; border:1px solid #735822; }
         .st-key-ev_filter_bar {
             background:#0a111c; border:1px solid #1e2b3d; border-radius:12px;
@@ -519,6 +611,9 @@ def _inject_theme() -> None:
         .ev-table-row summary:hover { background:#0e1b2a; }
         .ev-table-row[open] summary { background:#0e1b2a; border-bottom:1px solid #253346; }
         .ev-rank,.ev-positive { color:#39df83; font-weight:850; }
+        .ev-positive small {
+            display:block; color:#8794a7; font-size:.56rem; font-weight:600; margin-top:3px;
+        }
         .ev-matchup strong { color:#f1f5f9; font-size:.84rem; display:block; }
         .ev-matchup span,.ev-cell-sub {
             color:#8e9bad; font-size:.68rem; display:block; margin-top:2px;
@@ -684,6 +779,14 @@ def _age_label(quote: Quote, as_of: datetime) -> str:
     return f"{seconds // 60}m"
 
 
+def _recommendation_freshness(quote: Quote, as_of: datetime) -> str:
+    config = _refresh_config(str(st.session_state.get("data_source", "Demo"))).freshness
+    state = freshness_state(quote.observed_at, as_of=as_of, config=config)
+    seconds = max(0, int((as_of - quote.observed_at).total_seconds()))
+    checked_age = f"{seconds}s" if seconds < 60 else f"{seconds // 60}m"
+    return f"{state.value} · checked {checked_age} ago"
+
+
 def _elapsed_label(moment: datetime, as_of: datetime) -> str:
     seconds = max(0, int((as_of - moment).total_seconds()))
     if seconds < 60:
@@ -703,6 +806,7 @@ def _render_odds_status(
     as_of: datetime,
     container: Any | None = None,
 ) -> None:
+    del fresh_quotes
     target = container if container is not None else st
     if not quotes:
         target.markdown(
@@ -713,15 +817,13 @@ def _render_odds_status(
         return
     last_refresh = max(quote.observed_at for quote in quotes)
     age = _elapsed_label(last_refresh, as_of)
-    if len(fresh_quotes) == len(quotes):
-        state = "Fresh odds"
-        state_class = "fresh"
-    elif fresh_quotes:
-        state = "Partly stale"
-        state_class = "stale"
-    else:
-        state = "Stale odds"
-        state_class = "stale"
+    freshness = freshness_state(
+        last_refresh,
+        as_of=as_of,
+        config=_refresh_config(str(st.session_state.get("data_source", "Demo"))).freshness,
+    )
+    state = f"{freshness.value} odds"
+    state_class = freshness.name.casefold().replace("_", "-")
     refreshed_at = last_refresh.astimezone().strftime("%I:%M %p").lstrip("0")
     target.markdown(
         '<div class="ev-update-status">'
@@ -830,25 +932,50 @@ def _sidebar(
                 key="min_roi",
             )
             odds_format = st.radio("Odds", ["American", "Decimal"], horizontal=True)
-        active_leagues = list(LEAGUE_ICONS)
-        active_markets = ["Moneyline", "Spread", "Total"]
+        supported_leagues = list(LEAGUE_ICONS)
+        supported_markets = ["Moneyline", "Spread", "Total"]
         if data_mode in {"Demo", "OddsPapi Free"}:
-            active_markets.append("Player props")
+            supported_markets.append("Player props")
+        if is_admin:
+            with st.expander("Odds Data", expanded=False):
+                st.caption("Enabled sports")
+                active_leagues = [
+                    league
+                    for league in supported_leagues
+                    if st.checkbox(
+                        f"{LEAGUE_ICONS[league]} {league}",
+                        value=league in CORE_REFRESH_LEAGUES,
+                        key=f"refresh_league_{_provider_id(data_mode)}_{league}",
+                    )
+                ]
+                st.caption("Markets")
+                active_markets = [
+                    market
+                    for market in supported_markets
+                    if st.checkbox(
+                        market,
+                        value=market != "Player props",
+                        key=f"refresh_market_{_provider_id(data_mode)}_{market}",
+                        help=(
+                            "Available on demand; not selected by default."
+                            if market == "Player props"
+                            else None
+                        ),
+                    )
+                ]
+                _render_refresh_admin_status(repository, data_mode)
+        else:
+            active_leagues = supported_leagues
+            active_markets = supported_markets
         st.divider()
-        refresh_label = {
-            "Demo": "Refresh demo feed",
-            "OddsPapi Free": "Refresh latest odds",
-            "The Odds API": "Fetch live odds",
-        }[data_mode]
         refresh = False
         if is_admin:
             refresh = st.button(
-                refresh_label,
+                "Refresh Odds",
                 type="primary",
                 width="stretch",
             )
-            if data_mode == "OddsPapi Free":
-                st.caption("Manual refresh only—no credits are spent in the background.")
+            st.caption("Manual refresh only—no credits are spent in the background.")
             if st.button("Save preferences", width="stretch"):
                 repository.save_setting("bankroll", str(bankroll))
                 repository.save_setting("freshness_minutes", str(freshness))
@@ -1801,7 +1928,7 @@ def _render_priority_value_bets(
             '<div class="best-bet-support">'
             f"<span>◎ Consensus fair odds: <strong>{fair_odds}</strong></span>"
             f"<span>▥ Market range: <strong>{market_range}</strong></span>"
-            f"<span>◷ Data freshness: <strong>{_age_label(top.quote, as_of)} ago</strong></span>"
+            f"<span>◷ <strong>{_recommendation_freshness(top.quote, as_of)}</strong></span>"
             "</div>",
             unsafe_allow_html=True,
         )
@@ -1874,7 +2001,8 @@ def _render_priority_value_bets(
             f"{item_implied:.1%}<small>Break-even</small></span></span>"
             f'<span class="ev-fair ev-cell-main">{item_fair_odds}'
             '<span class="ev-cell-sub">Consensus</span></span>'
-            f'<span class="ev-positive">{_format_edge(item.expected_value)}</span>'
+            f'<span class="ev-positive">{_format_edge(item.expected_value)}'
+            f'<small>{_recommendation_freshness(item.quote, as_of)}</small></span>'
             f'<span class="ev-consensus ev-cell-main">{item.reference_books} books</span>'
             f'<span class="ev-range ev-cell-main">{item_range}</span>'
             f'<span class="ev-best-book ev-cell-main"><strong>{html.escape(item_book)}</strong>'
@@ -2294,84 +2422,67 @@ def run() -> None:
         MARKET_LABELS[label] for label in controls["active_markets"] if label in MARKET_LABELS
     ]
 
-    if controls["mode"] == "Demo":
-        if controls["refresh"]:
-            snapshot = DemoOddsProvider().fetch_snapshot(
-                selected_league_keys,
-                selected_market_keys,
+    if controls["refresh"]:
+        if controls["mode"] != "Demo" and not controls["api_key"]:
+            provider_name = (
+                "OddsPapi" if controls["mode"] == "OddsPapi Free" else "The Odds API"
             )
-            repository.save_snapshot(snapshot)
-            st.session_state["refresh_notice"] = (
-                f"Demo feed refreshed: {len(snapshot.quotes)} quotes"
-            )
-            st.rerun()
-    elif controls["refresh"]:
-        if not controls["api_key"]:
-            provider_name = "OddsPapi" if controls["mode"] == "OddsPapi Free" else "The Odds API"
             st.error(f"Enter an {provider_name} key before refreshing live odds.")
         else:
-            provider: OddsProvider | None = None
-            try:
-                if controls["mode"] == "OddsPapi Free":
-                    stored = repository.load_settings()
-                    tournament_ids = {
+            provider: OddsProvider
+            if controls["mode"] == "Demo":
+                provider = DemoOddsProvider()
+            elif controls["mode"] == "OddsPapi Free":
+                stored = repository.load_settings()
+                provider = OddsPapiProvider(
+                    api_key=controls["api_key"],
+                    bookmaker_slugs=tuple(
+                        ODDSPAPI_BOOK_SLUGS[book]
+                        for book in STARTER_BOOKS
+                        if book in ODDSPAPI_BOOK_SLUGS
+                    ),
+                    tournament_ids={
                         str(key): int(value)
                         for key, value in _json_object(
                             stored.get("oddspapi_tournament_ids")
                         ).items()
-                    }
-                    market_catalog = {
+                    },
+                    market_catalog={
                         str(key): dict(value)
                         for key, value in _json_object(
                             stored.get("oddspapi_market_catalog")
                         ).items()
                         if isinstance(value, dict)
-                    }
-                    provider = OddsPapiProvider(
-                        api_key=controls["api_key"],
-                        bookmaker_slugs=tuple(
-                            ODDSPAPI_BOOK_SLUGS[book]
-                            for book in STARTER_BOOKS
-                            if book in ODDSPAPI_BOOK_SLUGS
-                        ),
-                        tournament_ids=tournament_ids,
-                        market_catalog=market_catalog,
-                    )
-                else:
-                    provider = OddsApiProvider(
-                        api_key=controls["api_key"],
-                        regions=controls["regions"],
-                    )
-                service = ScannerService(
-                    provider=provider,
-                    repository=repository,
-                    freshness=controls["freshness"],
+                    },
                 )
-                snapshot = service.refresh(selected_league_keys, selected_market_keys)
-                if isinstance(provider, OddsPapiProvider):
-                    repository.save_setting(
-                        "oddspapi_tournament_ids",
-                        json.dumps(provider.tournament_ids, separators=(",", ":")),
-                    )
-                    repository.save_setting(
-                        "oddspapi_market_catalog",
-                        json.dumps(provider.market_catalog, separators=(",", ":")),
-                    )
-                    _used, requests_remaining = _record_oddspapi_requests(
-                        repository,
-                        provider.request_count,
-                    )
-                st.session_state["refresh_notice"] = (
-                    f"Stored {len(snapshot.quotes)} latest quotes from "
-                    f"{len({quote.sportsbook.name for quote in snapshot.quotes})} sportsbooks"
-                    + (
-                        f" · about {requests_remaining} free requests remain"
-                        if isinstance(provider, OddsPapiProvider)
-                        else ""
-                    )
+            else:
+                provider = OddsApiProvider(
+                    api_key=controls["api_key"],
+                    regions=controls["regions"],
                 )
-                st.rerun()
-            except (OddsApiError, OddsPapiError, KeyError, ValueError) as exc:
+
+            try:
+                refresh_request = RefreshRequest(
+                    league_keys=tuple(selected_league_keys),
+                    league_ids=tuple(
+                        LEAGUE_IDS[label]
+                        for label in controls["active_leagues"]
+                        if label in LEAGUE_IDS
+                    ),
+                    market_keys=tuple(selected_market_keys),
+                    market_kinds=tuple(
+                        MARKET_KINDS[key]
+                        for key in selected_market_keys
+                        if key in MARKET_KINDS
+                    ),
+                )
+                with st.spinner("Refreshing odds…"):
+                    diagnostics = OddsRefreshService(
+                        provider=provider,
+                        repository=repository,
+                        config=_refresh_config(str(controls["mode"])),
+                    ).refresh(refresh_request)
+                st.session_state["last_refresh_diagnostics"] = diagnostics
                 if isinstance(provider, OddsPapiProvider):
                     repository.save_setting(
                         "oddspapi_tournament_ids",
@@ -2382,6 +2493,9 @@ def run() -> None:
                         json.dumps(provider.market_catalog, separators=(",", ":")),
                     )
                     _record_oddspapi_requests(repository, provider.request_count)
+                st.session_state["refresh_notice"] = _diagnostic_message(diagnostics)
+                st.rerun()
+            except (KeyError, ValueError) as exc:
                 st.error(str(exc))
 
     try:
@@ -2450,6 +2564,22 @@ def run() -> None:
         candidate_sportsbooks=candidate_books,
         include_stale=True,
     )
+    stored_opportunities = repository.list_value_opportunities(provider_id)
+    if stored_opportunities:
+        active_opportunity_keys = {
+            (item.sportsbook_id, item.outcome_id)
+            for item in stored_opportunities
+            if item.is_active
+            and (
+                _refresh_config(str(controls["mode"])).show_stale_recommendations
+                or not item.is_stale
+            )
+        }
+        values = tuple(
+            item
+            for item in values
+            if (item.quote.sportsbook.id, item.quote.outcome.id) in active_opportunity_keys
+        )
     filtered_values = _filter_value_opportunities(
         values,
         event_map,

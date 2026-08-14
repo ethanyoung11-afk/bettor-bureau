@@ -17,6 +17,7 @@ from odds_scanner.domain import (
     Sport,
     Sportsbook,
 )
+from odds_scanner.providers.odds_api import FOOTBALL_LEAGUES
 
 SPORT = Sport(id="american-football", name="American Football")
 LEAGUES = (
@@ -321,7 +322,9 @@ class DemoOddsProvider:
         market_keys: Sequence[str],
     ) -> OddsSnapshot:
         snapshot = generate_demo_snapshots(points=1)[0]
-        leagues = {key.removeprefix("americanfootball_") for key in league_keys}
+        leagues = {
+            FOOTBALL_LEAGUES[key].league_id for key in league_keys if key in FOOTBALL_LEAGUES
+        }
         kinds = {
             "h2h": MarketKind.MONEYLINE,
             "spreads": MarketKind.SPREAD,

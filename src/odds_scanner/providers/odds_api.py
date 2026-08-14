@@ -38,6 +38,12 @@ FOOTBALL_LEAGUES: Mapping[str, LeagueConfig] = {
     "americanfootball_cfl": LeagueConfig(
         "americanfootball_cfl", "american-football", "American Football", "cfl", "CFL"
     ),
+    "basketball_nba": LeagueConfig(
+        "basketball_nba", "basketball", "Basketball", "nba", "NBA"
+    ),
+    "icehockey_nhl": LeagueConfig(
+        "icehockey_nhl", "ice-hockey", "Ice Hockey", "nhl", "NHL"
+    ),
 }
 
 
@@ -65,6 +71,7 @@ class OddsApiProvider:
     session: requests.Session = field(default_factory=requests.Session)
     identity_resolver: IdentityResolver = field(default_factory=IdentityResolver)
     market_normalizer: MarketNormalizer = field(default_factory=MarketNormalizer)
+    request_count: int = field(default=0, init=False)
 
     @property
     def provider_id(self) -> str:
@@ -128,6 +135,7 @@ class OddsApiProvider:
             },
             timeout=self.timeout_seconds,
         )
+        self.request_count += 1
         try:
             response.raise_for_status()
         except requests.HTTPError as exc:

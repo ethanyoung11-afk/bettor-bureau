@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 from odds_scanner.domain import MarketKind, OutcomeSide
-from odds_scanner.providers.oddspapi import OddsPapiProvider, _full_game_market
+from odds_scanner.providers.oddspapi import OddsPapiProvider, _full_game_market, _league_key
 
 
 class StubResponse:
@@ -307,3 +307,10 @@ def test_market_classifier_rejects_partial_and_team_totals() -> None:
         )
         is None
     )
+
+
+def test_league_classifier_supports_initial_mvp_sports() -> None:
+    assert _league_key("NFL") == "americanfootball_nfl"
+    assert _league_key("NCAAF") == "americanfootball_ncaaf"
+    assert _league_key("NBA") == "basketball_nba"
+    assert _league_key("NHL") == "icehockey_nhl"

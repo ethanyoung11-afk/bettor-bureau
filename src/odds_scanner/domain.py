@@ -58,6 +58,16 @@ class BetStatus(StrEnum):
     VOID = "void"
 
 
+class OpportunityStatus(StrEnum):
+    DISCOVERED = "discovered"
+    ACTIVE = "active"
+    INACTIVE_PRICE_MOVED = "inactive_price_moved"
+    INACTIVE_MARKET_REMOVED = "inactive_market_removed"
+    INACTIVE_EVENT_STARTED = "inactive_event_started"
+    STALE = "stale"
+    EXPIRED = "expired"
+
+
 SIDE_ORDER = {
     OutcomeSide.HOME: 0,
     OutcomeSide.DRAW: 1,
@@ -201,6 +211,90 @@ class OddsSnapshot:
 
     def __post_init__(self) -> None:
         ensure_aware(self.fetched_at, "fetched_at")
+
+
+@dataclass(frozen=True, slots=True)
+class ValueOpportunityRecord:
+    id: str
+    provider_id: str
+    event_id: str
+    sportsbook_id: str
+    sportsbook: str
+    outcome_id: str
+    market_kind: MarketKind
+    selection: OutcomeSide
+    first_seen_at: datetime
+    last_seen_at: datetime
+    last_verified_at: datetime
+    last_price_change_at: datetime
+    last_updated_at: datetime
+    is_active: bool
+    is_stale: bool
+    status: OpportunityStatus
+    recommended_price: Decimal
+    current_price: Decimal
+    ev_at_activation: Decimal
+    current_ev: Decimal
+    fair_probability: Decimal
+    implied_probability: Decimal
+    price_change_count_recent: int = 0
+    api_snapshot_id: str | None = None
+    deactivated_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "first_seen_at",
+            "last_seen_at",
+            "last_verified_at",
+            "last_price_change_at",
+            "last_updated_at",
+        ):
+            ensure_aware(getattr(self, field_name), field_name)
+        if self.deactivated_at is not None:
+            ensure_aware(self.deactivated_at, "deactivated_at")
+
+
+@dataclass(frozen=True, slots=True)
+class RefreshRun:
+    id: str
+    provider_id: str
+    trigger_type: str
+    status: str
+    started_at: datetime
+    finished_at: datetime
+    league_keys: tuple[str, ...]
+    market_keys: tuple[str, ...]
+    requests_made: int
+    credits_consumed: int
+    credits_remaining: int | None
+    events_checked: int
+    sportsbooks_checked: int
+    new_opportunities: int
+    revalidated_opportunities: int
+    deactivated_opportunities: int
+    error_message: str | None = None
+
+    def __post_init__(self) -> None:
+        ensure_aware(self.started_at, "started_at")
+        ensure_aware(self.finished_at, "finished_at")
+
+
+@dataclass(frozen=True, slots=True)
+class ApiUsageSummary:
+    provider_id: str
+    requests_today: int
+    requests_this_month: int
+    credits_this_month: int
+    successful_refreshes: int
+    failed_refreshes: int
+    last_successful_refresh: datetime | None
+    last_failed_refresh: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class OpportunityCounts:
+    active: int
+    stale: int
 
 
 @dataclass(frozen=True, slots=True)

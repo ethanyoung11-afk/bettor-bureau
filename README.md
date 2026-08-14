@@ -36,13 +36,17 @@ The intentionally stale demo book verifies that stale prices are excluded from o
 
 ## Optional live data
 
-For the BC-first free workflow, select **OddsPapi Free**, enter an OddsPapi key, choose the
-leagues and markets you want, and press **Refresh latest odds**. Refreshing is manual: the app
-does not consume requests in the background. PlayNow, Betway, and Pinnacle are enabled by
-default; the other supported books remain available as switches. OddsPapi uses one request per
-enabled sportsbook on each refresh. The first refresh also caches the provider's league and
-market catalog locally, so later refreshes use fewer requests.
-The sidebar also keeps a local monthly estimate of free requests used and remaining.
+For the BC-first free workflow, select **OddsPapi Free**, open **Odds Data**, choose the sports
+and markets you want, and press **Refresh Odds**. Refreshing is manual: page loads, visitors,
+filters, sorting, and navigation never call the provider. The initial refresh scope supports
+NFL, NCAAF, NBA, and NHL core markets; CFL and on-demand player props remain available.
+OddsPapi uses one request per enabled sportsbook on each refresh. The first refresh also caches
+the provider's league and market catalog locally, so later refreshes use fewer requests.
+
+Every managed refresh rechecks affected +EV recommendations. Price moves or removed markets
+deactivate the recommendation without deleting its history. Failed requests preserve the last
+good snapshot and allow freshness rules to mark old recommendations as stale. The owner-only
+Odds Data panel reports API usage and the latest refresh diagnostics.
 
 ## Share a read-only hosted board
 
@@ -73,8 +77,11 @@ uses the same normalized domain objects and opportunity engines in either mode.
   adapter.
 - `opportunities.py`: freshness, deduplication, best prices, arbitrage, ROI, and stake sizing.
 - `analytics.py`: middle detection and no-vig consensus value estimates.
-- `storage/`: normalized SQLite history, settings, watchlist, and manual bet persistence.
-- `service.py`: ingestion and analysis orchestration.
+- `storage/`: normalized SQLite/Postgres odds history, recommendation lifecycle, refresh locks,
+  API usage, settings, watchlist, and manual bet persistence.
+- `refresh.py`: shared manual/future-scheduler refresh orchestration, revalidation, freshness,
+  adaptive-priority policy, and budget guardrails. Automated scheduling is not enabled.
+- `service.py`: lightweight analysis orchestration retained for non-refresh callers.
 - `ui.py`: Streamlit presentation and user interactions only.
 
 Spread contracts use the home participant's handicap as their canonical line. Home -3 and away

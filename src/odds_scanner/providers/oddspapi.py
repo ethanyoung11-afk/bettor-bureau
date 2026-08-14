@@ -90,6 +90,10 @@ def _league_key(tournament_name: str) -> str | None:
         or "ncaa-football" in token
     ):
         return "americanfootball_ncaaf"
+    if token == "nba" or "national-basketball-association" in token:
+        return "basketball_nba"
+    if token == "nhl" or "national-hockey-league" in token:
+        return "icehockey_nhl"
     return None
 
 
