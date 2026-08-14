@@ -1,7 +1,7 @@
 from odds_scanner.providers.demo import generate_demo_snapshots
 from odds_scanner.ui import (
-    PRIORITY_BOOKS,
     SPORTSBOOK_URLS,
+    STARTER_BOOKS,
     _event_odds_frame,
     _market_label,
     _password_matches,
@@ -52,8 +52,8 @@ def test_selection_label_uses_the_team_name_when_event_is_available(now):
     assert _selection_label(quote, event) in {event.home.name, event.away.name}
 
 
-def test_every_priority_book_has_a_bet_now_destination():
-    assert set(PRIORITY_BOOKS) <= SPORTSBOOK_URLS.keys()
+def test_every_available_book_has_a_bet_now_destination():
+    assert set(STARTER_BOOKS) <= SPORTSBOOK_URLS.keys()
 
 
 def test_player_prop_labels_name_the_player_stat_and_line(now):

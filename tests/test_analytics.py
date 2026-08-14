@@ -95,6 +95,24 @@ def test_consensus_value_can_target_playnow_and_betway_only(now):
     assert all(item.reference_books >= 2 for item in values)
 
 
+def test_personal_book_filter_does_not_limit_consensus_books(now):
+    current = deduplicate_quotes(
+        quote for snapshot in generate_demo_snapshots(now) for quote in snapshot.quotes
+    )
+    values = detect_consensus_value(
+        current,
+        as_of=now,
+        max_age=timedelta(minutes=5),
+        minimum_ev=Decimal("0"),
+        candidate_sportsbooks=("PlayNow",),
+    )
+
+    assert values
+    assert {item.quote.sportsbook.name for item in values} == {"PlayNow"}
+    assert all(item.reference_books >= 2 for item in values)
+    assert any("Betway" in item.reference_sportsbooks for item in values)
+
+
 def test_consensus_value_can_include_stale_quotes_when_requested(now):
     stale_quotes = tuple(
         quote for snapshot in generate_demo_snapshots(now) for quote in snapshot.quotes

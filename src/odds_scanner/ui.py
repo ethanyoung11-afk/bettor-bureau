@@ -57,6 +57,14 @@ PRIORITY_BOOKS = ("PlayNow", "Betway")
 SPORTSBOOK_URLS = {
     "PlayNow": "https://www.playnow.com/sports/sports/matches",
     "Betway": "https://betway.com/g/en/sports",
+    "Bet365": "https://www.bet365.ca/",
+    "BetMGM": "https://sports.betmgm.ca/en/sports",
+    "BetRivers": "https://www.betrivers.com/",
+    "Caesars": "https://www.caesars.com/sportsbook-and-casino",
+    "Circa Sports": "https://www.circasports.com/",
+    "DraftKings": "https://sportsbook.draftkings.com/",
+    "FanDuel": "https://sportsbook.fanduel.com/",
+    "Pinnacle": "https://www.pinnacle.com/en/betting-sports",
 }
 ODDSPAPI_FREE_CREDITS = 250
 ODDSPAPI_BOOK_SLUGS = {
@@ -379,7 +387,7 @@ def _render_page_header(mode: str) -> tuple[list[str], Any, Any]:
             unsafe_allow_html=True,
         )
         st.title("Advantage Betting Terminal")
-        st.caption("PlayNow and Betway value versus the market — with secondary arbitrage tools")
+        st.caption("Your sportsbooks versus the market — with secondary arbitrage tools")
     with status_column:
         status_container = st.container(key="header_odds_status")
     dashboard_container = st.container(key="header_dashboard")
@@ -408,7 +416,7 @@ def _render_header_dashboard(
     value_bet_count = sum(item.expected_value >= minimum_ev for item in values)
     metric_columns = container.columns(3)
     metric_columns[0].metric("Upcoming games", f"{upcoming_games:,}")
-    metric_columns[1].metric("Sportsbooks", sportsbook_count)
+    metric_columns[1].metric("Sportsbooks compared", sportsbook_count)
     metric_columns[2].metric("+EV bets", value_bet_count)
 
 
@@ -542,7 +550,7 @@ def _sidebar(
                         value=saved_oddspapi_key,
                         type="password",
                     )
-                    st.caption("Each enabled sportsbook uses one request per manual refresh.")
+                    st.caption("Each available sportsbook uses one request per manual refresh.")
                     st.progress(
                         min(1.0, requests_used / ODDSPAPI_FREE_CREDITS),
                         text=f"{requests_used} used · {requests_remaining} remaining",
@@ -598,23 +606,20 @@ def _sidebar(
             )
             if data_mode == "OddsPapi Free":
                 st.caption("Player props use the same refresh. Futures require a separate feed.")
-        with st.expander("Sportsbooks", expanded=False):
+        with st.expander("My sportsbooks", expanded=False):
             st.caption(
-                "PlayNow and Betway are pinned first. All comparison books are enabled by default."
+                "Choose where you can place bets. Consensus still uses every available odds book."
             )
-            active_books = [
+            my_books = [
                 book
                 for book in available_books
                 if st.toggle(
                     f"★ {book}" if book in PRIORITY_BOOKS else book,
                     value=True,
-                    key=f"sportsbook_enabled_{stable_id('ui-book-v2', data_mode, book)}",
+                    key=f"my_sportsbook_{stable_id('ui-book-v3', data_mode, book)}",
                 )
             ]
-            if data_mode == "OddsPapi Free":
-                st.caption(
-                    f"{len(active_books)} enabled = about {len(active_books)} requests per refresh."
-                )
+            st.caption(f"{len(my_books)} selected for your recommendations.")
         st.divider()
         refresh_label = {
             "Demo": "Refresh demo feed",
@@ -649,7 +654,7 @@ def _sidebar(
         "odds_format": odds_format,
         "active_leagues": active_leagues,
         "active_markets": active_markets,
-        "active_books": active_books,
+        "my_books": my_books,
         "refresh": refresh,
         "is_admin": is_admin,
     }
@@ -828,12 +833,12 @@ def _render_value(
         column_config={
             "Event": st.column_config.TextColumn(width="large", pinned=True),
             "Book odds": st.column_config.TextColumn(
-                help="The actual odds offered by PlayNow or Betway."
+                help="The actual odds offered by one of your selected sportsbooks."
             ),
             "Fair odds": st.column_config.TextColumn(
                 "Estimated fair odds",
                 help=(
-                    "A margin-free estimate derived from the other enabled sportsbooks. It is "
+                    "A margin-free estimate derived from the other available sportsbooks. It is "
                     "not an offered betting price."
                 ),
             ),
@@ -848,8 +853,8 @@ def _render_value(
         },
     )
     st.caption(
-        "Only PlayNow and Betway candidates are shown. Consensus uses other enabled books after "
-        "removing their margin."
+        "Only your selected sportsbooks can be recommended. Consensus uses every other "
+        "available book after removing its margin."
     )
 
 
@@ -989,15 +994,20 @@ def _render_priority_value_bets(
     event_map: dict[str, Event],
     odds_format: str,
     as_of: datetime,
+    my_books: tuple[str, ...],
 ) -> None:
     st.markdown('<div class="section-kicker">Primary betting board</div>', unsafe_allow_html=True)
-    st.subheader("Best PlayNow + Betway +EV bets")
+    st.subheader("Best +EV bets for your sportsbooks")
     minimum = Decimal(str(st.session_state["min_ev"])) / Decimal("100")
     qualifying = tuple(item for item in values if item.expected_value >= minimum)
+    sportsbook_label = "sportsbook" if len(my_books) == 1 else "sportsbooks"
     st.caption(
-        f"Target books only · {minimum:.1%} minimum EV · target book excluded from its own "
-        "no-vig consensus"
+        f"{len(my_books)} {sportsbook_label} selected · {minimum:.1%} minimum EV · all other "
+        "available books used for consensus"
     )
+    if not my_books:
+        st.info("Select at least one sportsbook under My sportsbooks.")
+        return
     if not qualifying:
         return
 
@@ -1054,7 +1064,7 @@ def _render_priority_value_bets(
         metrics[1].metric(
             "Offered odds",
             offered_odds,
-            help="The actual price currently offered by PlayNow or Betway.",
+            help="The actual price currently offered by your selected sportsbook.",
         )
         metrics[2].metric(
             "Estimated edge",
@@ -1065,7 +1075,7 @@ def _render_priority_value_bets(
             "Consensus fair odds",
             format_odds(top.fair_odds, odds_format),
             help=(
-                "A margin-free estimate derived from the other enabled sportsbooks. It is not "
+                "A margin-free estimate derived from the other available sportsbooks. It is not "
                 "an offered betting price."
             ),
         )
@@ -1152,7 +1162,7 @@ def _render_priority_value_bets(
                 "Consensus fair odds",
                 item_fair_odds,
                 help=(
-                    "A margin-free estimate derived from the other enabled sportsbooks. "
+                    "A margin-free estimate derived from the other available sportsbooks. "
                     "It is not an offered betting price."
                 ),
             )
@@ -1171,8 +1181,9 @@ def _render_overview(
     event_map: dict[str, Event],
     as_of: datetime,
     odds_format: str,
+    my_books: tuple[str, ...],
 ) -> None:
-    _render_priority_value_bets(values, event_map, odds_format, as_of)
+    _render_priority_value_bets(values, event_map, odds_format, as_of, my_books)
 
 
 def _render_games(
@@ -1374,7 +1385,7 @@ def _render_settings(
             "minimum_consensus_edge_percent": st.session_state["min_ev"],
             "active_leagues": controls["active_leagues"],
             "active_markets": controls["active_markets"],
-            "active_sportsbooks": controls["active_books"],
+            "my_sportsbooks": controls["my_books"],
             "database": storage_label,
         },
         expanded=True,
@@ -1474,7 +1485,7 @@ def run() -> None:
                         api_key=controls["api_key"],
                         bookmaker_slugs=tuple(
                             ODDSPAPI_BOOK_SLUGS[book]
-                            for book in controls["active_books"]
+                            for book in STARTER_BOOKS
                             if book in ODDSPAPI_BOOK_SLUGS
                         ),
                         tournament_ids=tournament_ids,
@@ -1558,12 +1569,10 @@ def run() -> None:
         for label in controls["active_markets"]
     }
     selected_leagues = {str(label).lower() for label in controls["active_leagues"]}
-    selected_books = set(controls["active_books"])
     quotes = tuple(
         quote
         for quote in latest_quotes
-        if quote.sportsbook.name in selected_books
-        and quote.outcome.market.kind in selected_kinds
+        if quote.outcome.market.kind in selected_kinds
         and quote.outcome.market.event_id in all_event_map
         and all_event_map[quote.outcome.market.event_id].league_id in selected_leagues
     )
@@ -1583,12 +1592,13 @@ def run() -> None:
         max_age=controls["freshness"],
     )
     middles = detect_middles(quotes, as_of=as_of, max_age=controls["freshness"])
+    my_books = tuple(str(book) for book in controls["my_books"])
     values = detect_consensus_value(
         quotes,
         as_of=as_of,
         max_age=controls["freshness"],
         minimum_ev=Decimal("0.005"),
-        candidate_sportsbooks=PRIORITY_BOOKS,
+        candidate_sportsbooks=my_books,
         include_stale=True,
     )
     _render_odds_status(quotes, fresh_quotes, as_of, container=header_odds_status)
@@ -1605,10 +1615,11 @@ def run() -> None:
             event_map,
             as_of,
             controls["odds_format"],
+            my_books,
         )
     with opportunities_tab:
         arb_tab, middle_tab, value_tab, best_tab = st.tabs(
-            ["Arbitrage", "Middles", "PlayNow + Betway +EV", "Best lines"]
+            ["Arbitrage", "Middles", "My sportsbooks +EV", "Best lines"]
         )
         with arb_tab:
             _render_arb_detail(arbs, event_map, as_of, controls["min_roi"])
@@ -1619,11 +1630,15 @@ def run() -> None:
         with best_tab:
             _render_best_lines(quotes, event_map, controls["odds_format"])
     with games_tab:
+        comparison_books = sorted(
+            {quote.sportsbook.name for quote in quotes},
+            key=_book_sort_key,
+        )
         _render_games(
             quotes,
             events,
             controls["odds_format"],
-            list(controls["active_books"]),
+            comparison_books,
             repository,
             is_admin=is_admin,
         )
