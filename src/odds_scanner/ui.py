@@ -244,6 +244,8 @@ def _inject_theme() -> None:
         :root { --terminal-green: #39d98a; --terminal-amber: #ffb547; --panel: #111827; }
         .stApp { background: #070b12; }
         [data-testid="stHeader"] { background: rgba(7,11,18,.88); }
+        [data-testid="stAppDeployButton"], [data-testid="stMainMenu"],
+        [data-testid="stDecoration"] { display:none !important; }
         [data-testid="stSidebar"] { background: #0b111c; border-right: 1px solid #1f2937; }
         .block-container { padding: .65rem 1.2rem 1.5rem; max-width: 1800px; }
         h1, h2, h3 { letter-spacing: -.025em; margin-top: .3rem; margin-bottom: .35rem; }
@@ -373,14 +375,17 @@ def _inject_theme() -> None:
         .stDataFrame { border: 1px solid #202b3d; border-radius: 8px; overflow:hidden; }
         [data-testid="stExpander"] { border-color: #202b3d; background: #0b111c; }
         button[data-baseweb="tab"] { font-weight: 650; }
-        [data-testid="stButtonGroup"] button[data-variant="pills"][aria-pressed="true"] {
+        [data-testid="stButtonGroup"] button[data-variant="pills"][aria-pressed="true"],
+        [data-testid="stButtonGroup"] button[aria-checked="true"] {
             background: #123525 !important; border-color: #2a8a5d !important;
             color: #6ee7b7 !important;
         }
-        [data-testid="stButtonGroup"] button[data-variant="pills"][aria-pressed="true"] p {
+        [data-testid="stButtonGroup"] button[data-variant="pills"][aria-pressed="true"] p,
+        [data-testid="stButtonGroup"] button[aria-checked="true"] p {
             color: #6ee7b7 !important; font-weight: 750;
         }
-        [data-testid="stButtonGroup"] button[data-variant="pills"][aria-pressed="true"]:hover {
+        [data-testid="stButtonGroup"] button[data-variant="pills"][aria-pressed="true"]:hover,
+        [data-testid="stButtonGroup"] button[aria-checked="true"]:hover {
             background: #184c37 !important; border-color: #39d98a !important;
         }
         [data-testid="stButtonGroup"] button[data-variant="pills"]:focus-visible {
@@ -390,8 +395,17 @@ def _inject_theme() -> None:
             border-color: #39d98a !important; color: #9af0c7 !important;
         }
         .ev-page-subtitle { color:#b4bfce; font-size:.94rem; margin-top:-.15rem; }
-        .ev-update-status { color:#a7b2c2; font-size:.82rem; text-align:right; line-height:1.45; }
+        .ev-update-status {
+            display:flex; justify-content:flex-end; align-items:center; flex-wrap:wrap; gap:7px;
+            color:#a7b2c2; font-size:.78rem; text-align:right; line-height:1.35;
+        }
         .ev-update-status strong { color:#d6dde8; font-weight:700; }
+        .ev-freshness-state {
+            display:inline-flex; padding:3px 7px; border-radius:999px; font-size:.65rem;
+            font-weight:800; letter-spacing:.04em; text-transform:uppercase;
+        }
+        .ev-freshness-state.fresh { color:#74ebb0; background:#103824; border:1px solid #24794f; }
+        .ev-freshness-state.stale { color:#ffd38a; background:#382a12; border:1px solid #735822; }
         .st-key-ev_filter_bar {
             background:#0a111c; border:1px solid #1e2b3d; border-radius:12px;
             padding:.65rem .75rem .35rem; margin:.55rem 0 .45rem;
@@ -474,6 +488,10 @@ def _inject_theme() -> None:
             min-height:48px; font-size:.92rem; font-weight:850; background:#22c55e !important;
             border-color:#39d98a !important; color:#04110a !important; box-shadow:none;
         }
+        .best-price-title {
+            color:#f4f7fb; font-size:1.35rem; line-height:1.2; font-weight:850;
+            letter-spacing:-.025em; margin:.25rem 0 .7rem;
+        }
         .best-bet-support {
             border-top:1px solid #293647; margin-top:.55rem; padding-top:.65rem;
             color:#a5b1c1; font-size:.77rem; display:flex; flex-wrap:wrap; gap:1.2rem;
@@ -535,6 +553,21 @@ def _inject_theme() -> None:
             background:#0a121e; color:#8f9caf;
         }
         .ev-empty strong { display:block; color:#eef2f7; font-size:1.05rem; margin-bottom:.35rem; }
+        .legal-strip {
+            display:flex; align-items:center; flex-wrap:wrap; gap:8px 12px; padding:.7rem .85rem;
+            border:1px solid #263448; border-radius:10px; background:#0a131f;
+            color:#aeb9c8; font-size:.76rem; line-height:1.45;
+        }
+        .legal-strip strong { color:#eef2f7; }
+        .legal-strip a,.legal-details a { color:#55e79a !important; text-decoration:none; }
+        .legal-age {
+            display:inline-flex; align-items:center; justify-content:center;
+            width:30px; height:30px;
+            flex:0 0 30px; border:1px solid #4b5c70; border-radius:50%; color:#f2f6fa;
+            font-size:.68rem; font-weight:850;
+        }
+        .legal-details { color:#9eabba; font-size:.76rem; line-height:1.55; }
+        .legal-details strong { color:#e7edf4; }
         .ev-list-title {
             color:#f2f6fa; font-size:1.05rem; font-weight:850; margin:.9rem .15rem .4rem;
         }
@@ -551,14 +584,27 @@ def _inject_theme() -> None:
         }
         @media (max-width: 760px) {
             .block-container { padding:.6rem .75rem 1.2rem; }
-            .ev-grid {
-                grid-template-columns:34px minmax(150px,2fr) 72px 90px 70px 74px 22px;
-                column-gap:7px;
+            h1 { font-size:1.75rem; }
+            .ev-page-subtitle { font-size:.82rem; }
+            .ev-update-status { justify-content:flex-start; text-align:left; margin:.2rem 0; }
+            .ev-table-head { display:none; }
+            .ev-table-row summary {
+                grid-template-columns:28px minmax(0,1fr) 74px 22px;
+                grid-template-rows:auto auto auto; column-gap:8px; row-gap:7px;
+                padding:.7rem .6rem;
             }
             .ev-market,.ev-fair,.ev-consensus,.ev-range,.ev-best-book { display:none; }
-            .ev-table-head { font-size:.58rem; }
-            .ev-table-row summary { padding:.6rem .5rem; }
+            .ev-rank { grid-column:1; grid-row:1 / span 3; align-self:start; }
+            .ev-matchup { grid-column:2; grid-row:1; }
+            .ev-positive { grid-column:3; grid-row:1; text-align:right; }
+            .ev-chevron { grid-column:4; grid-row:1; }
+            .ev-best-odds { grid-column:2; grid-row:2; }
+            .ev-probability-cell { grid-column:3 / span 2; grid-row:2; justify-content:flex-end; }
+            .ev-action-cell { grid-column:2 / span 3; grid-row:3; }
+            .ev-action { width:100%; box-sizing:border-box; }
             .ev-featured-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); gap:.55rem 0; }
+            .best-bet-support { gap:.45rem .8rem; }
+            .legal-strip { align-items:flex-start; }
         }
         </style>
         """,
@@ -566,21 +612,9 @@ def _inject_theme() -> None:
     )
 
 
-def _render_page_header(mode: str) -> Any:
-    badge_class = "demo-badge" if mode == "Demo" else "terminal-badge"
-    badge_text = (
-        "DEMO MARKET"
-        if mode == "Demo"
-        else "BC LIVE BOARD"
-        if mode == "OddsPapi Free"
-        else "LIVE MARKET"
-    )
+def _render_page_header() -> Any:
     title_column, status_column = st.columns([4.8, 2], vertical_alignment="center")
     with title_column:
-        st.markdown(
-            f'<span class="terminal-badge {badge_class}">{badge_text}</span>',
-            unsafe_allow_html=True,
-        )
         st.title("+EV Bets")
         st.markdown(
             '<div class="ev-page-subtitle">Positive expected value bets identified by comparing '
@@ -680,13 +714,20 @@ def _render_odds_status(
     last_refresh = max(quote.observed_at for quote in quotes)
     age = _elapsed_label(last_refresh, as_of)
     if len(fresh_quotes) == len(quotes):
-        state = "Fresh"
+        state = "Fresh odds"
+        state_class = "fresh"
     elif fresh_quotes:
         state = "Partly stale"
+        state_class = "stale"
     else:
-        state = "Stale"
+        state = "Stale odds"
+        state_class = "stale"
+    refreshed_at = last_refresh.astimezone().strftime("%I:%M %p").lstrip("0")
     target.markdown(
-        f'<div class="ev-update-status">Last updated: <strong>{age}</strong> ↻<br>{state}</div>',
+        '<div class="ev-update-status">'
+        f'<span class="ev-freshness-state {state_class}">{state}</span>'
+        f'<span>Last refreshed at <strong>{refreshed_at}</strong> · {age} ↻</span>'
+        "</div>",
         unsafe_allow_html=True,
     )
 
@@ -1204,13 +1245,10 @@ def _sportsbook_toggle_key(mode: str, book: str) -> str:
 def _set_sportsbook_selection(books: tuple[str, ...], mode: str, enabled: bool) -> None:
     for book in books:
         st.session_state[_sportsbook_toggle_key(mode, book)] = enabled
+    st.session_state["ev_page"] = 0
 
 
-def _reset_ev_filters() -> None:
-    st.session_state["ev_sport_filter"] = "All Sports"
-    st.session_state["ev_market_filter"] = "All Markets"
-    st.session_state["ev_minimum_preset"] = "2%+"
-    st.session_state["ev_custom_minimum"] = 2.0
+def _reset_secondary_ev_filters() -> None:
     st.session_state["ev_implied_preset"] = "Any"
     st.session_state["ev_custom_implied"] = 0.0
     st.session_state["ev_odds_range_enabled"] = False
@@ -1219,6 +1257,15 @@ def _reset_ev_filters() -> None:
     st.session_state["ev_consensus_books"] = "Any"
     st.session_state["ev_start_window"] = "Any time"
     st.session_state["ev_freshness_filter"] = "Include stale"
+    st.session_state["ev_page"] = 0
+
+
+def _reset_ev_filters() -> None:
+    _reset_secondary_ev_filters()
+    st.session_state["ev_sport_filter"] = "All Sports"
+    st.session_state["ev_market_filter"] = "All Markets"
+    st.session_state["ev_minimum_preset"] = "2%+"
+    st.session_state["ev_custom_minimum"] = 2.0
     st.session_state["ev_sort_by"] = "EV % (High to Low)"
 
 
@@ -1270,16 +1317,32 @@ def _render_ev_filter_bar(
             "Sport",
             league_options,
             key="ev_sport_filter",
+            label_visibility="collapsed",
+            on_change=_set_ev_page,
+            args=(0,),
         )
         market = market_col.selectbox(
             "Market",
             market_options,
             key="ev_market_filter",
+            label_visibility="collapsed",
+            on_change=_set_ev_page,
+            args=(0,),
         )
         minimum_preset = ev_col.selectbox(
             "Minimum EV",
             preset_options,
             key="ev_minimum_preset",
+            label_visibility="collapsed",
+            format_func=lambda option: (
+                "Any positive EV"
+                if option == "Any positive EV"
+                else "Custom EV"
+                if option == "Custom"
+                else f"EV ≥ {option.removesuffix('+')}"
+            ),
+            on_change=_set_ev_page,
+            args=(0,),
         )
 
         selected_before = tuple(
@@ -1308,6 +1371,8 @@ def _render_ev_filter_bar(
                     "Apply sportsbooks",
                     type="primary",
                     width="stretch",
+                    on_click=_set_ev_page,
+                    args=(0,),
                 )
                 action_columns = st.columns(2)
                 action_columns[0].form_submit_button(
@@ -1329,28 +1394,28 @@ def _render_ev_filter_bar(
                 st.caption("No selections means all eligible sportsbooks.")
 
         with more_col.popover("More Filters", width="stretch"):
-            implied_preset = st.selectbox(
-                "Minimum break-even probability",
-                ["Any", "10%+", "20%+", "30%+", "40%+", "50%+", "Custom"],
-                key="ev_implied_preset",
-                help=(
-                    "How often the bet needs to win at the offered odds to break even over time. "
-                    "For example, +225 requires a 30.8% win rate."
-                ),
-            )
-            if implied_preset == "Custom":
+            st.caption("Adjust several filters, then apply once.")
+            with st.form("secondary_ev_filters", border=False):
+                implied_preset = st.selectbox(
+                    "Minimum break-even probability",
+                    ["Any", "10%+", "20%+", "30%+", "40%+", "50%+", "Custom"],
+                    key="ev_implied_preset",
+                    help=(
+                        "How often the bet needs to win at the offered odds to break even over "
+                        "time. For example, +225 requires a 30.8% win rate."
+                    ),
+                )
                 st.number_input(
-                    "Custom break-even probability %",
+                    "Custom probability % (used when Custom is selected)",
                     min_value=0.0,
                     max_value=100.0,
                     step=1.0,
                     key="ev_custom_implied",
                 )
-            use_odds_range = st.toggle(
-                "Offered odds range",
-                key="ev_odds_range_enabled",
-            )
-            if use_odds_range:
+                use_odds_range = st.toggle(
+                    "Use offered odds range",
+                    key="ev_odds_range_enabled",
+                )
                 odds_columns = st.columns(2)
                 odds_columns[0].number_input(
                     "Minimum American odds",
@@ -1362,26 +1427,39 @@ def _render_ev_filter_bar(
                     step=10,
                     key="ev_max_american",
                 )
-            consensus_preset = st.selectbox(
-                "Minimum consensus books",
-                ["Any", "3+", "4+", "5+", "6+", "7+"],
-                key="ev_consensus_books",
-            )
-            start_window = st.selectbox(
-                "Game start time",
-                ["Any time", "Next 6 hours", "Next 12 hours", "Next 24 hours", "Next 3 days"],
-                key="ev_start_window",
-            )
-            freshness_filter = st.selectbox(
-                "Price freshness",
-                ["Include stale", "Fresh only"],
-                key="ev_freshness_filter",
-            )
-            st.button(
-                "Reset secondary filters",
-                on_click=_reset_ev_filters,
-                width="stretch",
-            )
+                consensus_preset = st.selectbox(
+                    "Minimum consensus books",
+                    ["Any", "3+", "4+", "5+", "6+", "7+"],
+                    key="ev_consensus_books",
+                )
+                start_window = st.selectbox(
+                    "Game start time",
+                    [
+                        "Any time",
+                        "Next 6 hours",
+                        "Next 12 hours",
+                        "Next 24 hours",
+                        "Next 3 days",
+                    ],
+                    key="ev_start_window",
+                )
+                freshness_filter = st.selectbox(
+                    "Price freshness",
+                    ["Include stale", "Fresh only"],
+                    key="ev_freshness_filter",
+                )
+                st.form_submit_button(
+                    "Apply filters",
+                    type="primary",
+                    width="stretch",
+                    on_click=_set_ev_page,
+                    args=(0,),
+                )
+                st.form_submit_button(
+                    "Reset secondary filters",
+                    on_click=_reset_secondary_ev_filters,
+                    width="stretch",
+                )
 
         sort_by = sort_col.selectbox(
             "Sort by",
@@ -1392,6 +1470,9 @@ def _render_ev_filter_bar(
                 "Recently Updated",
             ],
             key="ev_sort_by",
+            label_visibility="collapsed",
+            on_change=_set_ev_page,
+            args=(0,),
         )
 
     if minimum_preset == "Custom":
@@ -1443,12 +1524,6 @@ def _render_ev_filter_bar(
     }[start_window]
 
     chips: list[str] = []
-    if sport != "All Sports":
-        chips.append(sport)
-    if market != "All Markets":
-        chips.append(market)
-    if minimum_ev > 0:
-        chips.append(f"EV ≥ {minimum_ev:.0%}")
     if implied_percent > 0:
         chips.append(f"Break-even Prob. ≥ {implied_percent}%")
     if use_odds_range:
@@ -1709,7 +1784,11 @@ def _render_priority_value_bets(
             )
         with action_column:
             st.caption("BEST AVAILABLE PRICE")
-            st.markdown(f"### {top.quote.sportsbook.name}  {offered_odds}")
+            st.markdown(
+                f'<div class="best-price-title">{html.escape(top.quote.sportsbook.name)} '
+                f"{offered_odds}</div>",
+                unsafe_allow_html=True,
+            )
             if sportsbook_url:
                 st.link_button(
                     f"Bet {offered_odds} on {top.quote.sportsbook.name}",
@@ -1787,7 +1866,7 @@ def _render_priority_value_bets(
             f'<span>{html.escape(item_event.name)}<br>{item_event.league_id.upper()} · '
             f"{item_event.start_time.astimezone().strftime('%a %b %d, %I:%M %p')}</span></span>"
             f'<span class="ev-market ev-cell-main">{html.escape(item_market)}</span>'
-            f'<span><span class="ev-odds">{item_odds}</span>'
+            f'<span class="ev-best-odds"><span class="ev-odds">{item_odds}</span>'
             f'<span class="ev-cell-sub">{html.escape(item_book)}</span></span>'
             '<span class="ev-probability-cell"><span>'
             f"{item.fair_probability:.1%}<small>Consensus</small></span>"
@@ -1800,7 +1879,8 @@ def _render_priority_value_bets(
             f'<span class="ev-range ev-cell-main">{item_range}</span>'
             f'<span class="ev-best-book ev-cell-main"><strong>{html.escape(item_book)}</strong>'
             f'<span class="ev-cell-sub">{item_odds}</span></span>'
-            f'<span>{link_markup}</span><span class="ev-chevron">⌄</span>'
+            f'<span class="ev-action-cell">{link_markup}</span>'
+            '<span class="ev-chevron">⌄</span>'
             f'</summary><div class="ev-details">{details_markup}</div></details>'
         )
     st.markdown(
@@ -2127,12 +2207,57 @@ def _render_settings(
     )
 
 
+def _render_launch_disclosures(mode: str) -> None:
+    data_warning = (
+        "Demo prices are fictional and must not be used to place wagers."
+        if mode == "Demo"
+        else "Live odds may be delayed, incomplete, unavailable, or changed without notice."
+    )
+    st.markdown(
+        '<div class="legal-strip"><span class="legal-age">19+</span><span>'
+        '<strong>Bet responsibly.</strong> Gambling involves risk. +EV is an estimate, not a '
+        'guarantee of profit. Need help? Call Gambling Support BC at '
+        '<a href="tel:+18887956111">1-888-795-6111</a> (free, confidential, 24/7) or '
+        '<a href="https://www2.gov.bc.ca/gov/content/sports-culture/gambling-fundraising/'
+        'gambling-support-bc" target="_blank" rel="noopener noreferrer">visit Gambling '
+        'Support BC ↗</a>.</span></div>',
+        unsafe_allow_html=True,
+    )
+    with st.expander("Disclosures, privacy & affiliate policy", expanded=False):
+        st.markdown(
+            '<div class="legal-details">'
+            '<p><strong>Informational tool only.</strong> This product is an odds-comparison '
+            'and analysis tool, not a sportsbook, betting operator, financial adviser, or '
+            'guarantee of any outcome. It does not accept or place wagers. You are responsible '
+            'for confirming legal eligibility and complying with the rules in your location.</p>'
+            f'<p><strong>Odds and calculations.</strong> {data_warning} Fair odds, win '
+            'probability, expected value, arbitrage, and middle estimates depend on third-party '
+            'data and assumptions and may be incorrect. Verify the market, price, limits, rules, '
+            'and availability directly with the sportsbook before betting.</p>'
+            '<p><strong>Third-party links.</strong> Sportsbook links open independent third-party '
+            'services. Their eligibility requirements, geographic restrictions, privacy '
+            'practices, and terms apply. Sportsbook names and trademarks belong to their '
+            'respective owners; inclusion does not imply endorsement or partnership.</p>'
+            '<p><strong>Affiliate disclosure.</strong> If a sportsbook link is identified as an '
+            'affiliate link, this product may receive compensation when you use it. Compensation '
+            'does not change the calculation or ranking of opportunities. Unmarked links are not '
+            'represented as affiliate relationships.</p>'
+            '<p><strong>Privacy.</strong> This build stores preferences and optional bet-tracker '
+            'entries in the product database. Never enter sportsbook passwords, payment details, '
+            'or other sensitive account credentials. A hosted service should publish complete '
+            'Terms of Use and a Privacy Policy before collecting user accounts, analytics, or '
+            'other personal information.</p></div>',
+            unsafe_allow_html=True,
+        )
+
+
 def run() -> None:
     app_icon = Path(__file__).resolve().parents[2] / "assets" / "advantage-betting-terminal.png"
     st.set_page_config(
         page_title="+EV Bets · Advantage Terminal",
         page_icon=str(app_icon),
         layout="wide",
+        initial_sidebar_state="collapsed",
     )
     _inject_theme()
     is_admin = _owner_access()
@@ -2156,7 +2281,7 @@ def run() -> None:
         key=_book_sort_key,
     )
     controls = _sidebar(repository, is_admin=is_admin)
-    header_odds_status = _render_page_header(str(controls["mode"]))
+    header_odds_status = _render_page_header()
 
     refresh_notice = st.session_state.pop("refresh_notice", None)
     if refresh_notice:
@@ -2409,14 +2534,4 @@ def run() -> None:
         _render_settings(repository, controls["mode"], controls)
 
     st.divider()
-    footer_text = (
-        "Demo prices are fictional. Verify live prices and availability directly with each "
-        "sportsbook. Bet responsibly."
-        if controls["mode"] == "Demo"
-        else "Live feeds can be delayed or incomplete. Verify every price and market directly "
-        "with each sportsbook before betting."
-    )
-    st.markdown(
-        f'<div class="risk-note">{footer_text}</div>',
-        unsafe_allow_html=True,
-    )
+    _render_launch_disclosures(str(controls["mode"]))
