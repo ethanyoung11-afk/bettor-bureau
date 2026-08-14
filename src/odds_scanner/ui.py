@@ -1061,15 +1061,6 @@ def _render_priority_value_bets(
                     icon=":material/open_in_new:",
                     width="stretch",
                 )
-    with st.expander("How these bets are ranked", expanded=False):
-        st.write(
-            "The scanner removes each comparison book's margin, averages the remaining fair "
-            "probabilities, and compares that estimate with the PlayNow or Betway price. The "
-            "sportsbook offering the bet never contributes to its own benchmark."
-        )
-        st.caption("Estimated value is not guaranteed profit. Confirm the market and price.")
-
-
 def _render_overview(
     quotes: tuple[Quote, ...],
     fresh_quotes: tuple[Quote, ...],
