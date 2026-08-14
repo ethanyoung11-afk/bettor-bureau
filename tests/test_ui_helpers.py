@@ -10,13 +10,14 @@ from odds_scanner.ui import (
 
 def test_event_odds_frame_keeps_book_columns_and_marks_best_prices(now):
     snapshot = generate_demo_snapshots(now)[-1]
-    event_id = snapshot.events[0].id
+    event = snapshot.events[0]
+    event_id = event.id
     event_quotes = tuple(
         quote for quote in snapshot.quotes if quote.outcome.market.event_id == event_id
     )
     sportsbooks = ["PlayNow", "Betway", "Pinnacle"]
 
-    frame = _event_odds_frame(event_quotes, sportsbooks, "American")
+    frame = _event_odds_frame(event_quotes, sportsbooks, "American", event)
 
     assert list(frame.columns) == ["Market", "Bet", *sportsbooks]
     assert not frame.empty
@@ -25,6 +26,8 @@ def test_event_odds_frame_keeps_book_columns_and_marks_best_prices(now):
         for row in frame[sportsbooks].itertuples(index=False, name=None)
     )
     assert all(value == "—" or isinstance(value, str) for value in frame[sportsbooks].values.flat)
+    assert any(event.home.name in str(value) for value in frame["Bet"])
+    assert any(event.away.name in str(value) for value in frame["Bet"])
 
 
 def test_owner_password_uses_a_sha256_digest():

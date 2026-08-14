@@ -851,6 +851,7 @@ def _event_odds_frame(
     quotes: tuple[Quote, ...],
     sportsbook_names: list[str],
     odds_format: str,
+    event: Event | None = None,
 ) -> pd.DataFrame:
     selected_books = set(sportsbook_names)
     display_quotes = tuple(
@@ -871,7 +872,7 @@ def _event_odds_frame(
             outcome_id,
             {
                 "Market": _market_label(quote.outcome.market),
-                "Bet": _selection_label(quote),
+                "Bet": _selection_label(quote, event),
                 **{sportsbook: "—" for sportsbook in sportsbook_names},
             },
         )
@@ -897,8 +898,9 @@ def _render_event_odds_matrix(
     event_quotes: tuple[Quote, ...],
     sportsbook_names: list[str],
     odds_format: str,
+    event: Event | None = None,
 ) -> None:
-    frame = _event_odds_frame(event_quotes, sportsbook_names, odds_format)
+    frame = _event_odds_frame(event_quotes, sportsbook_names, odds_format, event)
     if frame.empty:
         st.info("No current bets are available for this event.")
         return
@@ -918,6 +920,9 @@ def _render_event_board(
     events: tuple[Event, ...],
     sportsbook_names: list[str],
     odds_format: str,
+    repository: QuoteRepository | None = None,
+    *,
+    is_admin: bool = False,
 ) -> None:
     st.markdown('<div class="section-kicker">Upcoming events</div>', unsafe_allow_html=True)
     st.subheader(f"Event odds comparison · {len(events)} games")
@@ -930,6 +935,9 @@ def _render_event_board(
     if not available_events:
         st.info("No saved upcoming events match the selected leagues. Refresh the latest odds.")
         return
+    watched_event_ids = (
+        repository.watched_event_ids() if repository is not None and is_admin else set()
+    )
     for event in available_events:
         league = event.league_id.upper()
         icon = LEAGUE_ICONS.get(league, "🏟️")
@@ -938,7 +946,15 @@ def _render_event_board(
             quote for quote in quotes if quote.outcome.market.event_id == event.id
         )
         with st.expander(f"{icon} {league} · {event.name} · {local_start}", expanded=False):
-            _render_event_odds_matrix(event_quotes, sportsbook_names, odds_format)
+            if repository is not None and is_admin:
+                watched = event.id in watched_event_ids
+                if st.button(
+                    "Remove from watchlist" if watched else "Add to watchlist",
+                    key=f"watch_event_{event.id}",
+                ):
+                    repository.set_event_watched(event.id, not watched, datetime.now(UTC))
+                    st.rerun()
+            _render_event_odds_matrix(event_quotes, sportsbook_names, odds_format, event)
 
 
 def _render_priority_value_bets(
@@ -1142,29 +1158,14 @@ def _render_games(
     *,
     is_admin: bool,
 ) -> None:
-    quoted_ids = {quote.outcome.market.event_id for quote in quotes}
-    choices = {
-        f"{event.league_id.upper()} | {event.name}": event
-        for event in events
-        if event.id in quoted_ids
-    }
-    if not choices:
-        st.info("No current games are available.")
-        return
-    label = st.selectbox("Game", list(choices))
-    event = choices[label]
-    event_quotes = tuple(quote for quote in quotes if quote.outcome.market.event_id == event.id)
-    watched = event.id in repository.watched_event_ids() if is_admin else False
-    heading_column, action_column = st.columns([4, 1])
-    heading_column.subheader(event.name)
-    local_start = event.start_time.astimezone().strftime("%A, %b %d at %I:%M %p")
-    heading_column.caption(f"{event.league_id.upper()} | {local_start}")
-    if is_admin and action_column.button(
-        "Remove watch" if watched else "Add to watchlist", width="stretch"
-    ):
-        repository.set_event_watched(event.id, not watched, datetime.now(UTC))
-        st.rerun()
-    _render_event_odds_matrix(event_quotes, sportsbook_names, odds_format)
+    _render_event_board(
+        quotes,
+        events,
+        sportsbook_names,
+        odds_format,
+        repository,
+        is_admin=is_admin,
+    )
 
 
 def _render_line_movement(history: tuple[Quote, ...], events: tuple[Event, ...]) -> None:
