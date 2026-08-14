@@ -1,0 +1,30 @@
+name: Refresh live odds
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 */4 * * *"
+
+concurrency:
+  group: linescout-odds-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install LineScout
+        run: pip install .
+      - name: Refresh the shared odds snapshot
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          ODDSPAPI_API_KEY: ${{ secrets.ODDSPAPI_API_KEY }}
+          ODDSPAPI_MONTHLY_CREDIT_LIMIT: ${{ vars.ODDSPAPI_MONTHLY_CREDIT_LIMIT || '250' }}
+          ODDSPAPI_MONTHLY_CREDIT_RESERVE: ${{ vars.ODDSPAPI_MONTHLY_CREDIT_RESERVE || '25' }}
+        run: python -m odds_scanner.live_refresh

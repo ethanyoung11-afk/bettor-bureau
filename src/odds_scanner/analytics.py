@@ -152,7 +152,7 @@ def rank_recommendations(
                 edge=candidate.expected_value,
                 rationale=(
                     f"Offered price is {candidate.expected_value:.2%} above the no-vig "
-                    f"consensus estimate from {candidate.reference_books} other books."
+                    f"consensus estimate from {candidate.reference_books} books."
                 ),
                 risk="Estimated value, not guaranteed profit.",
                 priority=2,
@@ -291,7 +291,7 @@ def detect_consensus_value(
             for book_id, side_quotes in by_book.items()
             if all(side in side_quotes for side in required_sides)
         }
-        if len(complete_books) < 3:
+        if len(complete_books) < 2:
             continue
 
         fair_by_book: dict[str, dict[OutcomeSide, Decimal]] = {}
@@ -310,22 +310,21 @@ def detect_consensus_value(
                 and candidate.sportsbook.name.casefold() not in candidate_names
             ):
                 continue
-            references = [
+            consensus = [
                 (book_id, fair[candidate.outcome.side])
                 for book_id, fair in fair_by_book.items()
-                if book_id != candidate.sportsbook.id
             ]
-            if len(references) < 2:
+            if len(consensus) < 2:
                 continue
             fair_probability = sum(
-                (probability for _, probability in references), Decimal("0")
-            ) / Decimal(len(references))
+                (probability for _, probability in consensus), Decimal("0")
+            ) / Decimal(len(consensus))
             expected_value = fair_probability * candidate.decimal_odds - Decimal("1")
             if expected_value >= minimum_ev:
-                reference_names = tuple(
+                consensus_names = tuple(
                     sorted(
                         complete_books[book_id][required_sides[0]].sportsbook.name
-                        for book_id, _ in references
+                        for book_id, _ in consensus
                     )
                 )
                 results.append(
@@ -333,8 +332,8 @@ def detect_consensus_value(
                         quote=candidate,
                         fair_probability=fair_probability,
                         expected_value=expected_value,
-                        reference_books=len(references),
-                        reference_sportsbooks=reference_names,
+                        reference_books=len(consensus),
+                        reference_sportsbooks=consensus_names,
                     )
                 )
     return tuple(sorted(results, key=lambda item: item.expected_value, reverse=True))

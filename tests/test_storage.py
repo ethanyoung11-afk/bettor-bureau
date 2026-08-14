@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal
 
@@ -12,7 +13,10 @@ from odds_scanner.storage.sqlite import SQLiteQuoteRepository
 
 def test_sqlite_snapshot_round_trip(tmp_path, now, event, league):
     market = make_market()
-    quote = make_quote(market, OutcomeSide.HOME, "2.10", now, book="alpha")
+    quote = replace(
+        make_quote(market, OutcomeSide.HOME, "2.10", now, book="alpha"),
+        source_url="https://alpha.example/sports/event/event-1",
+    )
     snapshot = OddsSnapshot(
         provider_id="provider",
         sports=(Sport("american-football", "American Football"),),

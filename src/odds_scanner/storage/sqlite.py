@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS quotes (
     source_updated_at TEXT NOT NULL,
     observed_at TEXT NOT NULL,
     source_event_id TEXT,
+    source_url TEXT,
     UNIQUE(provider_id, sportsbook_id, outcome_id, source_updated_at, observed_at)
 );
 CREATE INDEX IF NOT EXISTS idx_quotes_source_updated ON quotes(source_updated_at);
@@ -182,6 +183,11 @@ class SQLiteQuoteRepository:
         with self._write_lock, self._connection() as connection:
             connection.execute("PRAGMA journal_mode = WAL")
             connection.executescript(SCHEMA)
+            quote_columns = {
+                str(row["name"]) for row in connection.execute("PRAGMA table_info(quotes)")
+            }
+            if "source_url" not in quote_columns:
+                connection.execute("ALTER TABLE quotes ADD COLUMN source_url TEXT")
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
@@ -306,7 +312,8 @@ class SQLiteQuoteRepository:
         )
         connection.execute(
             "INSERT OR IGNORE INTO quotes(provider_id, sportsbook_id, outcome_id, decimal_odds, "
-            "source_updated_at, observed_at, source_event_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "source_updated_at, observed_at, source_event_id, source_url) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 quote.provider_id,
                 quote.sportsbook.id,
@@ -315,6 +322,7 @@ class SQLiteQuoteRepository:
                 quote.source_updated_at.isoformat(),
                 quote.observed_at.isoformat(),
                 quote.source_event_id,
+                quote.source_url,
             ),
         )
         quote_row = connection.execute(
@@ -342,7 +350,8 @@ class SQLiteQuoteRepository:
             raise ValueError("since must be timezone-aware")
         query = """
             SELECT q.provider_id, q.decimal_odds, q.source_updated_at, q.observed_at,
-                   q.source_event_id, b.id AS sportsbook_id, b.name AS sportsbook_name,
+                   q.source_event_id, q.source_url, b.id AS sportsbook_id,
+                   b.name AS sportsbook_name,
                    o.side, m.event_id, m.kind, m.required_sides, m.period, m.line,
                    m.subject_id, m.stat_key, m.variant
             FROM quotes q
@@ -359,7 +368,8 @@ class SQLiteQuoteRepository:
         """Load the last observed price for every sportsbook outcome, regardless of age."""
         query = """
             SELECT q.provider_id, q.decimal_odds, q.source_updated_at, q.observed_at,
-                   q.source_event_id, b.id AS sportsbook_id, b.name AS sportsbook_name,
+                   q.source_event_id, q.source_url, b.id AS sportsbook_id,
+                   b.name AS sportsbook_name,
                    o.side, m.event_id, m.kind, m.required_sides, m.period, m.line,
                    m.subject_id, m.stat_key, m.variant
               FROM latest_quote_state current
@@ -375,7 +385,8 @@ class SQLiteQuoteRepository:
                 rows = connection.execute(
                     """
                     SELECT q.provider_id, q.decimal_odds, q.source_updated_at, q.observed_at,
-                           q.source_event_id, b.id AS sportsbook_id, b.name AS sportsbook_name,
+                           q.source_event_id, q.source_url, b.id AS sportsbook_id,
+                           b.name AS sportsbook_name,
                            o.side, m.event_id, m.kind, m.required_sides, m.period, m.line,
                            m.subject_id, m.stat_key, m.variant
                       FROM (
@@ -788,4 +799,5 @@ class SQLiteQuoteRepository:
             source_updated_at=datetime.fromisoformat(str(row["source_updated_at"])),
             observed_at=datetime.fromisoformat(str(row["observed_at"])),
             source_event_id=row["source_event_id"],
+            source_url=row["source_url"],
         )

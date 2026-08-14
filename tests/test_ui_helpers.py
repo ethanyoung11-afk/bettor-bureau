@@ -1,20 +1,34 @@
+from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal
 
 from odds_scanner.analytics import detect_consensus_value
 from odds_scanner.opportunities import deduplicate_quotes, implied_probability
+from odds_scanner.presentation import decimal_to_american
 from odds_scanner.providers.demo import generate_demo_snapshots
 from odds_scanner.ui import (
+    CORE_REFRESH_LEAGUES,
+    RECOMMENDED_MAXIMUM_AMERICAN_ODDS,
+    RECOMMENDED_MINIMUM_AMERICAN_ODDS,
+    RECOMMENDED_MINIMUM_EV,
+    RECOMMENDED_MINIMUM_IMPLIED_PROBABILITY,
+    RECOMMENDED_MINIMUM_REFERENCE_BOOKS,
     SPORTSBOOK_URLS,
     STARTER_BOOKS,
     EVFilterState,
     _best_value_by_outcome,
+    _decode_sportsbook_preferences,
     _event_odds_frame,
     _filter_value_opportunities,
+    _game_event_markup,
+    _game_market_sections_markup,
     _market_label,
     _market_range_label,
     _password_matches,
+    _recommended_value_opportunities,
     _selection_label,
+    _sportsbook_bet_url,
+    _sportsbook_event_url,
     _value_comparison_markup,
 )
 
@@ -41,6 +55,43 @@ def test_event_odds_frame_keeps_book_columns_and_marks_best_prices(now):
     assert any(event.away.name in str(value) for value in frame["Bet"])
 
 
+def test_games_page_prices_are_clickable_and_best_price_is_highlighted(now):
+    snapshot = generate_demo_snapshots(now)[-1]
+    event = snapshot.events[0]
+    event_url = "https://sports.betway.com/en/sports/event/example"
+    event_quotes = tuple(
+        replace(quote, source_url=event_url)
+        if quote.sportsbook.name == "Betway"
+        else quote
+        for quote in snapshot.quotes
+        if quote.outcome.market.event_id == event.id
+    )
+    sportsbooks = ["PlayNow", "Betway", "Pinnacle"]
+
+    markets = _game_market_sections_markup(
+        event_quotes,
+        sportsbooks,
+        "American",
+        event,
+    )
+    event_markup = _game_event_markup(
+        event,
+        event_quotes,
+        sportsbooks,
+        "American",
+        expanded=True,
+    )
+
+    assert f'href="{event_url}"' in markets
+    assert 'class="games-price-link best"' in markets
+    assert 'aria-label="Bet ' in markets
+    assert "Moneyline" in markets
+    assert all(f"<th>{sportsbook}</th>" in markets for sportsbook in sportsbooks)
+    assert "Available to you" not in markets
+    assert '<details class="games-event" open>' in event_markup
+    assert event.name in event_markup
+
+
 def test_owner_password_uses_a_sha256_digest():
     expected_hash = "889bf59808d9edbab7703dd7db993fc02298c7d1bb20c52ba3114a9185903124"
 
@@ -64,6 +115,35 @@ def test_selection_label_uses_the_team_name_when_event_is_available(now):
 
 def test_every_available_book_has_a_bet_now_destination():
     assert set(STARTER_BOOKS) <= SPORTSBOOK_URLS.keys()
+
+
+def test_default_live_refresh_includes_cfl():
+    assert "CFL" in CORE_REFRESH_LEAGUES
+
+
+def test_saved_sportsbook_preferences_restore_only_available_books():
+    available = ("PlayNow", "Betway", "Pinnacle")
+
+    assert _decode_sportsbook_preferences(
+        '["Pinnacle","Unavailable Book","PlayNow"]',
+        available,
+    ) == ("PlayNow", "Pinnacle")
+    assert _decode_sportsbook_preferences("[]", available) == ()
+    assert _decode_sportsbook_preferences("not-json", available) is None
+
+
+def test_bet_now_prefers_a_verified_event_deep_link(now):
+    snapshot = generate_demo_snapshots(now)[-1]
+    quote = next(item for item in snapshot.quotes if item.sportsbook.name == "Betway")
+    event_url = "https://sports.betway.com/en/sports/event/example"
+
+    direct_quote = replace(quote, source_url=event_url)
+    unsafe_quote = replace(quote, source_url="https://malicious.example/phishing")
+
+    assert _sportsbook_event_url(direct_quote) == event_url
+    assert _sportsbook_bet_url(direct_quote) == event_url
+    assert _sportsbook_event_url(unsafe_quote) is None
+    assert _sportsbook_bet_url(unsafe_quote) == SPORTSBOOK_URLS["Betway"]
 
 
 def test_player_prop_labels_name_the_player_stat_and_line(now):
@@ -121,7 +201,43 @@ def test_ev_board_keeps_one_best_offer_per_bet_and_filters_implied_probability(n
     assert len(_best_value_by_outcome(values)) <= len(values)
 
 
-def test_market_range_uses_actual_offered_prices(now):
+def test_recommended_bets_clear_the_product_criteria(now):
+    snapshots = generate_demo_snapshots(now)
+    quotes = deduplicate_quotes(quote for snapshot in snapshots for quote in snapshot.quotes)
+    values = detect_consensus_value(
+        quotes,
+        as_of=now,
+        max_age=timedelta(minutes=5),
+        minimum_ev=Decimal("0"),
+    )
+    events = {event.id: event for event in snapshots[-1].events}
+
+    recommended = _recommended_value_opportunities(values, events, as_of=now)
+
+    assert len(recommended) == 3
+    assert all(item.expected_value >= RECOMMENDED_MINIMUM_EV for item in recommended)
+    assert all(
+        implied_probability(item.quote.decimal_odds)
+        >= RECOMMENDED_MINIMUM_IMPLIED_PROBABILITY
+        for item in recommended
+    )
+    assert all(
+        RECOMMENDED_MINIMUM_AMERICAN_ODDS
+        <= decimal_to_american(item.quote.decimal_odds)
+        <= RECOMMENDED_MAXIMUM_AMERICAN_ODDS
+        for item in recommended
+    )
+    assert all(
+        item.reference_books >= RECOMMENDED_MINIMUM_REFERENCE_BOOKS
+        for item in recommended
+    )
+    assert all(
+        events[item.quote.outcome.market.event_id].start_time > now
+        for item in recommended
+    )
+
+
+def test_expanded_comparison_shows_line_shopping_without_repeating_summary(now):
     snapshots = generate_demo_snapshots(now)
     quotes = deduplicate_quotes(quote for snapshot in snapshots for quote in snapshot.quotes)
     opportunity = detect_consensus_value(
@@ -135,6 +251,10 @@ def test_market_range_uses_actual_offered_prices(now):
     details = _value_comparison_markup(opportunity, quotes, "American", now)
 
     assert " to " in label
-    assert "Consensus win probability" in details
-    assert "Break-even probability" in details
-    assert "No-vig" not in details
+    assert "Compare prices" in details
+    assert "Implied prob." in details
+    assert "Edge vs fair" in details
+    assert "Books used for fair odds" in details
+    assert "Consensus win probability" not in details
+    assert "Break-even probability" not in details
+    assert "Market range" not in details

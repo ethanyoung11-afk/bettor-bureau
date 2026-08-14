@@ -134,6 +134,14 @@ def _player_prop_market(prices: tuple[str, str]) -> dict[str, object]:
 
 
 def test_oddspapi_normalizes_all_books_and_featured_markets() -> None:
+    betway_moneyline = _market((2011, 2012), ("2.02", "1.85"))
+    betway_outcomes = betway_moneyline["outcomes"]
+    assert isinstance(betway_outcomes, dict)
+    home_players = betway_outcomes["2011"]["players"]
+    assert isinstance(home_players, dict)
+    home_players["0"]["betslip"] = (
+        "https://betway.com/g/en/sports/betslip/new-england-moneyline"
+    )
     event = {
         "fixtureId": "fixture-1",
         "tournamentId": 900,
@@ -144,6 +152,7 @@ def test_oddspapi_normalizes_all_books_and_featured_markets() -> None:
         "bookmakerOdds": {
             "playnow": {
                 "bookmakerIsActive": True,
+                "bookmakerFixtureId": "12025970",
                 "markets": {
                     "201": _market((2011, 2012), ("1.91", "1.95")),
                     "301": _market((3011, 3012), ("1.90", "1.92")),
@@ -152,7 +161,8 @@ def test_oddspapi_normalizes_all_books_and_featured_markets() -> None:
             },
             "betway": {
                 "bookmakerIsActive": True,
-                "markets": {"201": _market((2011, 2012), ("2.02", "1.85"))},
+                "fixturePath": "https://betway.com/g/en/sports/event/fixture-1",
+                "markets": {"201": betway_moneyline},
             },
         },
     }
@@ -176,6 +186,15 @@ def test_oddspapi_normalizes_all_books_and_featured_markets() -> None:
     assert len(snapshot.events) == 1
     assert len(snapshot.quotes) == 8
     assert {quote.sportsbook.name for quote in snapshot.quotes} == {"PlayNow", "Betway"}
+    assert {
+        quote.source_url for quote in snapshot.quotes if quote.sportsbook.name == "PlayNow"
+    } == {"https://www.playnow.com/sports/sports/event/12025970"}
+    assert {
+        quote.source_url for quote in snapshot.quotes if quote.sportsbook.name == "Betway"
+    } == {
+        "https://betway.com/g/en/sports/betslip/new-england-moneyline",
+        "https://betway.com/g/en/sports/event/fixture-1",
+    }
     assert {quote.outcome.market.kind for quote in snapshot.quotes} == {
         MarketKind.MONEYLINE,
         MarketKind.SPREAD,
@@ -194,8 +213,27 @@ def test_oddspapi_normalizes_all_books_and_featured_markets() -> None:
         "markets",
         "odds-by-tournaments",
     ]
-    assert session.calls[-1][1]["bookmaker"] == "playnow"
+    assert "bookmakers" not in session.calls[-1][1]
     assert provider.request_count == 3
+
+
+def test_oddspapi_can_limit_a_single_batched_request_to_selected_books() -> None:
+    session = StubSession({"odds-by-tournaments": []})
+    provider = OddsPapiProvider(
+        api_key="test",
+        bookmaker_slugs=("playnow", "pinnacle", "playnow"),
+        include_all_bookmakers=False,
+        bookmaker_cooldown_seconds=0,
+        session=session,  # type: ignore[arg-type]
+        tournament_ids={"americanfootball_nfl": 800},
+        market_catalog={"201": _catalog()[0]},
+    )
+
+    provider.fetch_snapshot(["americanfootball_nfl"], ["h2h"])
+
+    assert len(session.calls) == 1
+    assert session.calls[0][1]["bookmakers"] == "playnow,pinnacle"
+    assert provider.request_count == 1
 
 
 def test_oddspapi_reuses_discovery_catalogs() -> None:
@@ -215,6 +253,30 @@ def test_oddspapi_reuses_discovery_catalogs() -> None:
     assert isinstance(session, StubSession)
     assert [call[0] for call in session.calls] == ["odds-by-tournaments"]
     assert provider.request_count == 1
+
+
+def test_oddspapi_discovers_tournaments_for_each_requested_sport() -> None:
+    session = StubSession(
+        {
+            "tournaments": [
+                {"tournamentId": 132, "tournamentName": "NBA"},
+                {"tournamentId": 234, "tournamentName": "NHL"},
+            ],
+            "markets": _catalog(),
+            "odds-by-tournaments": [],
+        }
+    )
+    provider = OddsPapiProvider(
+        api_key="test",
+        bookmaker_slugs=("pinnacle",),
+        bookmaker_cooldown_seconds=0,
+        session=session,  # type: ignore[arg-type]
+    )
+
+    provider.fetch_snapshot(["basketball_nba", "icehockey_nhl"], ["h2h"])
+
+    tournament_calls = [params for endpoint, params in session.calls if endpoint == "tournaments"]
+    assert [params["sportId"] for params in tournament_calls] == ["11", "15"]
 
 
 def test_oddspapi_normalizes_player_props_without_extra_requests() -> None:

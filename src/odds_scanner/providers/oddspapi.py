@@ -1,15 +1,16 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
-from time import sleep
+from time import monotonic, sleep
 from typing import Any
 
 import requests
 
 from odds_scanner.domain import (
+    Event,
     MarketKind,
     OddsSnapshot,
     OutcomeSide,
@@ -30,6 +31,13 @@ from odds_scanner.normalization import (
 from odds_scanner.providers.odds_api import FOOTBALL_LEAGUES, parse_timestamp
 
 AMERICAN_FOOTBALL_SPORT_ID = 14
+ODDSPAPI_SPORT_IDS: Mapping[str, int] = {
+    "americanfootball_nfl": AMERICAN_FOOTBALL_SPORT_ID,
+    "americanfootball_ncaaf": AMERICAN_FOOTBALL_SPORT_ID,
+    "americanfootball_cfl": AMERICAN_FOOTBALL_SPORT_ID,
+    "basketball_nba": 11,
+    "icehockey_nhl": 15,
+}
 ODDSPAPI_FOOTBALL_MARKETS = {*FOOTBALL_MARKETS, "player_props"}
 
 PLAYER_PROP_LABELS: Mapping[str, str] = {
@@ -196,7 +204,8 @@ class OddsPapiProvider:
         "fanduel",
         "betrivers",
     )
-    bookmaker_cooldown_seconds: float = 1.05
+    include_all_bookmakers: bool = True
+    bookmaker_cooldown_seconds: float = 1.6
     timeout_seconds: float = 30.0
     base_url: str = "https://api.oddspapi.io/v4"
     session: requests.Session = field(default_factory=requests.Session)
@@ -204,7 +213,9 @@ class OddsPapiProvider:
     market_catalog: dict[str, dict[str, Any]] = field(default_factory=dict)
     identity_resolver: IdentityResolver = field(default_factory=IdentityResolver)
     market_normalizer: MarketNormalizer = field(default_factory=MarketNormalizer)
+    event_url_resolver: Callable[[Event], str | None] | None = None
     request_count: int = field(default=0, init=False)
+    _last_request_at: float | None = field(default=None, init=False)
 
     @property
     def provider_id(self) -> str:
@@ -227,27 +238,24 @@ class OddsPapiProvider:
         if not requested_leagues or not requested_markets:
             raise OddsPapiError("Select at least one league and one market before refreshing.")
         requested_bookmakers = tuple(dict.fromkeys(self.bookmaker_slugs))
-        if not requested_bookmakers:
+        if not self.include_all_bookmakers and not requested_bookmakers:
             raise OddsPapiError("Enable at least one sportsbook before refreshing.")
 
         self._ensure_tournaments(requested_leagues)
         self._ensure_market_catalog()
         tournament_ids = [str(self.tournament_ids[key]) for key in requested_leagues]
-        raw_events: list[Mapping[str, Any]] = []
-        for index, bookmaker in enumerate(requested_bookmakers):
-            if index and self.bookmaker_cooldown_seconds > 0:
-                sleep(self.bookmaker_cooldown_seconds)
-            payload = self._request(
-                "odds-by-tournaments",
-                {
-                    "bookmaker": bookmaker,
-                    "tournamentIds": ",".join(tournament_ids),
-                    "language": "en",
-                    "verbosity": 3,
-                    "oddsFormat": "decimal",
-                },
-            )
-            raw_events.extend(self._event_list(payload))
+        odds_params: dict[str, object] = {
+            "tournamentIds": ",".join(tournament_ids),
+            "language": "en",
+            "verbosity": 3,
+            "oddsFormat": "decimal",
+        }
+        # OddsPapi returns every available sportsbook when `bookmakers` is omitted.
+        # This gives the consensus engine the broadest possible market in one request.
+        if not self.include_all_bookmakers:
+            odds_params["bookmakers"] = ",".join(requested_bookmakers)
+        payload = self._request("odds-by-tournaments", odds_params)
+        raw_events = self._event_list(payload)
 
         sports = {}
         leagues = {}
@@ -292,14 +300,15 @@ class OddsPapiProvider:
         missing = [key for key in league_keys if key not in self.tournament_ids]
         if not missing:
             return
-        payload = self._request(
-            "tournaments",
-            {"sportId": AMERICAN_FOOTBALL_SPORT_ID, "language": "en"},
-        )
-        for raw in self._event_list(payload):
-            key = _league_key(str(raw.get("tournamentName", "")))
-            if key and raw.get("tournamentId") is not None:
-                self.tournament_ids[key] = int(raw["tournamentId"])
+        for sport_id in dict.fromkeys(ODDSPAPI_SPORT_IDS[key] for key in missing):
+            payload = self._request(
+                "tournaments",
+                {"sportId": sport_id, "language": "en"},
+            )
+            for raw in self._event_list(payload):
+                key = _league_key(str(raw.get("tournamentName", "")))
+                if key and raw.get("tournamentId") is not None:
+                    self.tournament_ids[key] = int(raw["tournamentId"])
         still_missing = [key for key in league_keys if key not in self.tournament_ids]
         if still_missing:
             labels = [FOOTBALL_LEAGUES[key].league_name for key in still_missing]
@@ -310,7 +319,7 @@ class OddsPapiProvider:
             return
         payload = self._request("markets", {"language": "en"})
         for raw in self._event_list(payload):
-            if int(raw.get("sportId", -1)) != AMERICAN_FOOTBALL_SPORT_ID:
+            if int(raw.get("sportId", -1)) not in set(ODDSPAPI_SPORT_IDS.values()):
                 continue
             market_id = raw.get("marketId")
             if market_id is not None:
@@ -321,6 +330,12 @@ class OddsPapiProvider:
     def _request(self, endpoint: str, params: Mapping[str, object]) -> object:
         request_params = {"apiKey": self.api_key}
         request_params.update({key: str(value) for key, value in params.items()})
+        if self._last_request_at is not None and self.bookmaker_cooldown_seconds > 0:
+            elapsed = monotonic() - self._last_request_at
+            remaining = self.bookmaker_cooldown_seconds - elapsed
+            if remaining > 0:
+                sleep(remaining)
+        self._last_request_at = monotonic()
         self.request_count += 1
         response = self.session.get(
             f"{self.base_url}/{endpoint}",
@@ -379,6 +394,26 @@ class OddsPapiProvider:
                 id=stable_id("sportsbook", self.provider_id, book_slug),
                 name=_friendly_book_name(book_slug),
             )
+            fixture_path = raw_book_value.get("fixturePath")
+            source_url = str(fixture_path).strip() if fixture_path else None
+            bookmaker_fixture_id = str(
+                raw_book_value.get("bookmakerFixtureId") or ""
+            ).strip()
+            if (
+                not source_url
+                and book_slug.lower() == "playnow"
+                and bookmaker_fixture_id.isdigit()
+            ):
+                source_url = (
+                    "https://www.playnow.com/sports/sports/event/"
+                    f"{bookmaker_fixture_id}"
+                )
+            if (
+                not source_url
+                and book_slug.lower() == "playnow"
+                and self.event_url_resolver is not None
+            ):
+                source_url = self.event_url_resolver(event)
             raw_markets = raw_book_value.get("markets", {})
             if not isinstance(raw_markets, Mapping):
                 continue
@@ -459,6 +494,10 @@ class OddsPapiProvider:
                                 continue
                         except (NormalizationError, ValueError):
                             continue
+                        betslip_value = raw_price_value.get("betslip")
+                        betslip_url = (
+                            str(betslip_value).strip() if betslip_value else None
+                        )
                         result.append(
                             Quote(
                                 provider_id=self.provider_id,
@@ -471,6 +510,9 @@ class OddsPapiProvider:
                                 source_updated_at=fetched_at,
                                 observed_at=fetched_at,
                                 source_event_id=source_event_id,
+                                # A provider-supplied betslip URL is selection-specific. When it
+                                # is absent, fixturePath still takes the user to the right event.
+                                source_url=betslip_url or source_url,
                             )
                         )
         return event, result

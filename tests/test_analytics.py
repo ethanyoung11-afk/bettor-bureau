@@ -9,9 +9,10 @@ from odds_scanner.analytics import (
     plan_refreshes,
     rank_recommendations,
 )
-from odds_scanner.domain import MarketKind
+from odds_scanner.domain import MarketKind, OutcomeSide
 from odds_scanner.opportunities import deduplicate_quotes, detect_arbitrage
 from odds_scanner.providers.demo import generate_demo_snapshots
+from tests.conftest import make_market, make_quote
 
 
 def test_demo_feed_exercises_complete_product(now):
@@ -91,7 +92,7 @@ def test_consensus_value_can_target_playnow_and_betway_only(now):
 
     assert values
     assert {item.quote.sportsbook.name for item in values} <= {"PlayNow", "Betway"}
-    assert all(item.quote.sportsbook.name not in item.reference_sportsbooks for item in values)
+    assert all(item.quote.sportsbook.name in item.reference_sportsbooks for item in values)
     assert all(item.reference_books >= 2 for item in values)
 
 
@@ -111,6 +112,39 @@ def test_personal_book_filter_does_not_limit_consensus_books(now):
     assert {item.quote.sportsbook.name for item in values} == {"PlayNow"}
     assert all(item.reference_books >= 2 for item in values)
     assert any("Betway" in item.reference_sportsbooks for item in values)
+    assert all("PlayNow" in item.reference_sportsbooks for item in values)
+
+
+def test_consensus_includes_every_complete_book_including_the_candidate(now):
+    market = make_market()
+    quotes = tuple(
+        quote
+        for book, home, away in (
+            ("book-a", "2.10", "1.80"),
+            ("book-b", "2.00", "1.90"),
+            ("book-c", "1.95", "1.95"),
+            ("book-d", "1.90", "2.00"),
+        )
+        for quote in (
+            make_quote(market, OutcomeSide.HOME, home, now, book=book),
+            make_quote(market, OutcomeSide.AWAY, away, now, book=book),
+        )
+    )
+
+    values = detect_consensus_value(
+        quotes,
+        as_of=now,
+        max_age=timedelta(minutes=5),
+        minimum_ev=Decimal("-1"),
+        candidate_sportsbooks=("Book-A",),
+    )
+
+    assert values
+    assert all(item.reference_books == 4 for item in values)
+    assert all(
+        item.reference_sportsbooks == ("Book-A", "Book-B", "Book-C", "Book-D")
+        for item in values
+    )
 
 
 def test_consensus_value_can_include_stale_quotes_when_requested(now):

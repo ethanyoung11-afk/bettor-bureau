@@ -192,6 +192,7 @@ class Quote:
     source_updated_at: datetime
     observed_at: datetime
     source_event_id: str | None = None
+    source_url: str | None = None
 
     def __post_init__(self) -> None:
         if self.decimal_odds <= Decimal("1"):

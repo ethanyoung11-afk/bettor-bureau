@@ -1,4 +1,4 @@
-# Advantage Betting Terminal
+# LineScout
 
 A local sportsbook market-intelligence product for comparing prices, finding opportunities, and
 planning manual execution. It launches with a complete fictional demo market, so no API key is
@@ -15,7 +15,7 @@ Then open [http://localhost:8501](http://localhost:8501). Demo mode is selected 
 
 ### Open it like a Windows app
 
-Run `install_windows_shortcut.ps1` once. It creates an **Advantage Betting Terminal** shortcut
+Run `install_windows_shortcut.ps1` once. It creates a **LineScout** shortcut
 in the Start menu and the current user's pinned-taskbar folder. The shortcut starts the local
 server in the background (if necessary) and opens the terminal in your default browser without
 showing a PowerShell window.
@@ -34,14 +34,14 @@ showing a PowerShell window.
 Global filters cover league, market, sportsbook, quote age, minimum arb ROI, and odds format.
 The intentionally stale demo book verifies that stale prices are excluded from opportunities.
 
-## Optional live data
+## Live data
 
 For the BC-first free workflow, select **OddsPapi Free**, open **Odds Data**, choose the sports
-and markets you want, and press **Refresh Odds**. Refreshing is manual: page loads, visitors,
-filters, sorting, and navigation never call the provider. The initial refresh scope supports
-NFL, NCAAF, NBA, and NHL core markets; CFL and on-demand player props remain available.
-OddsPapi uses one request per enabled sportsbook on each refresh. The first refresh also caches
-the provider's league and market catalog locally, so later refreshes use fewer requests.
+and markets you want, and press **Refresh Odds**. Page loads, visitors, filters, sorting, and
+navigation never call the provider. The initial refresh scope supports NFL, NCAAF, CFL, NBA,
+and NHL, including available moneylines, spreads, totals, and player props. OddsPapi's all-book
+endpoint supplies the broad consensus in one odds request. The first refresh also caches the
+provider's league and market catalogs, so it can use a few additional requests.
 
 Every managed refresh rechecks affected +EV recommendations. Price moves or removed markets
 deactivate the recommendation without deleting its history. Failed requests preserve the last
@@ -65,6 +65,25 @@ feed credentials, saved settings, watchlists, and bet tracking remain hidden unt
 unlocks the app. Without `DATABASE_URL`, the local app continues to use SQLite; hosted sharing
 should use Postgres so every visitor sees the same durable snapshot.
 
+The browser checks the shared database once a minute and redraws only when the central worker has
+stored newer odds. These checks do not call OddsPapi. The included GitHub workflow runs the
+central refresh every four hours and can also be started manually. It protects a configurable
+monthly reserve before making provider calls.
+
+### Free beta deployment
+
+1. Create a Neon Postgres database and copy its pooled connection string.
+2. Push this repository to a private GitHub repository.
+3. Add `DATABASE_URL` and `ODDSPAPI_API_KEY` as GitHub Actions repository secrets.
+4. Deploy `app.py` on Streamlit Community Cloud from that repository.
+5. Add `SHARED_APP`, `ADMIN_PASSWORD_HASH`, `ODDSPAPI_API_KEY`, and `DATABASE_URL` in
+   Streamlit's encrypted secrets panel.
+6. Choose a memorable `linescout.streamlit.app` subdomain and share that URL.
+
+The scheduled updater is in `.github/workflows/refresh-odds.yml`. Its defaults are six refreshes
+per day, a 250-call monthly limit, and a 25-call owner reserve. Increase the schedule only after
+the provider plan is upgraded.
+
 Select **The Odds API** in the sidebar, enter a key from
 [The Odds API](https://the-odds-api.com/), and choose **Fetch live odds**. The rest of the product
 uses the same normalized domain objects and opportunity engines in either mode.
@@ -79,8 +98,9 @@ uses the same normalized domain objects and opportunity engines in either mode.
 - `analytics.py`: middle detection and no-vig consensus value estimates.
 - `storage/`: normalized SQLite/Postgres odds history, recommendation lifecycle, refresh locks,
   API usage, settings, watchlist, and manual bet persistence.
-- `refresh.py`: shared manual/future-scheduler refresh orchestration, revalidation, freshness,
-  adaptive-priority policy, and budget guardrails. Automated scheduling is not enabled.
+- `refresh.py`: shared manual/scheduled refresh orchestration, revalidation, freshness,
+  adaptive-priority policy, and budget guardrails.
+- `live_refresh.py`: host-independent central refresh worker used by GitHub Actions.
 - `service.py`: lightweight analysis orchestration retained for non-refresh callers.
 - `ui.py`: Streamlit presentation and user interactions only.
 

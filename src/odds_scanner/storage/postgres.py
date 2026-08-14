@@ -73,8 +73,10 @@ SCHEMA_STATEMENTS = (
         source_updated_at TEXT NOT NULL,
         observed_at TEXT NOT NULL,
         source_event_id TEXT,
+        source_url TEXT,
         UNIQUE(provider_id, sportsbook_id, outcome_id, source_updated_at, observed_at)
     )""",
+    "ALTER TABLE quotes ADD COLUMN IF NOT EXISTS source_url TEXT",
     "CREATE INDEX IF NOT EXISTS idx_quotes_source_updated ON quotes(source_updated_at)",
     "CREATE INDEX IF NOT EXISTS idx_quotes_outcome ON quotes(outcome_id)",
     """CREATE TABLE IF NOT EXISTS latest_quote_state (
@@ -291,7 +293,8 @@ class PostgresQuoteRepository:
         )
         cursor.execute(
             "INSERT INTO quotes(provider_id, sportsbook_id, outcome_id, decimal_odds, "
-            "source_updated_at, observed_at, source_event_id) VALUES (%s, %s, %s, %s, %s, %s, %s) "
+            "source_updated_at, observed_at, source_event_id, source_url) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
             "ON CONFLICT(provider_id, sportsbook_id, outcome_id, source_updated_at, observed_at) "
             "DO NOTHING",
             (
@@ -302,6 +305,7 @@ class PostgresQuoteRepository:
                 quote.source_updated_at.isoformat(),
                 quote.observed_at.isoformat(),
                 quote.source_event_id,
+                quote.source_url,
             ),
         )
         cursor.execute(
@@ -349,7 +353,8 @@ class PostgresQuoteRepository:
     def _quote_select(from_clause: str = "FROM quotes q") -> str:
         return f"""
             SELECT q.provider_id, q.decimal_odds, q.source_updated_at, q.observed_at,
-                   q.source_event_id, b.id AS sportsbook_id, b.name AS sportsbook_name,
+                   q.source_event_id, q.source_url, b.id AS sportsbook_id,
+                   b.name AS sportsbook_name,
                    o.side, m.event_id, m.kind, m.required_sides, m.period, m.line,
                    m.subject_id, m.stat_key, m.variant
               {from_clause}
@@ -760,4 +765,5 @@ class PostgresQuoteRepository:
             source_event_id=(
                 str(row["source_event_id"]) if row["source_event_id"] is not None else None
             ),
+            source_url=(str(row["source_url"]) if row["source_url"] is not None else None),
         )
