@@ -31,6 +31,23 @@ def test_sqlite_snapshot_round_trip(tmp_path, now, event, league):
     assert loaded == (quote,)
 
 
+def test_schedule_only_events_are_scoped_to_their_provider(tmp_path, now, event, league):
+    repository = SQLiteQuoteRepository(tmp_path / "schedule.db")
+    snapshot = OddsSnapshot(
+        provider_id="oddspapi",
+        sports=(Sport("american-football", "American Football"),),
+        leagues=(league,),
+        events=(event,),
+        quotes=(),
+        fetched_at=now,
+    )
+
+    repository.save_snapshot(snapshot)
+
+    assert repository.load_events("oddspapi") == (event,)
+    assert repository.load_events("another-provider") == ()
+
+
 def test_latest_quotes_keep_last_price_without_an_age_cutoff(tmp_path, now, event, league):
     market = make_market()
     old_quote = make_quote(market, OutcomeSide.HOME, "2.10", now, book="alpha")

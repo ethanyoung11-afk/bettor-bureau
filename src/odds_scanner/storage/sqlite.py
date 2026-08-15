@@ -51,6 +51,11 @@ CREATE TABLE IF NOT EXISTS events (
     away_id TEXT NOT NULL REFERENCES participants(id),
     name TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS provider_events (
+    provider_id TEXT NOT NULL,
+    event_id TEXT NOT NULL REFERENCES events(id),
+    PRIMARY KEY(provider_id, event_id)
+);
 CREATE TABLE IF NOT EXISTS markets (
     id TEXT PRIMARY KEY,
     event_id TEXT NOT NULL REFERENCES events(id),
@@ -249,6 +254,11 @@ class SQLiteQuoteRepository:
                     for event in snapshot.events
                 ),
             )
+            connection.executemany(
+                "INSERT INTO provider_events(provider_id, event_id) VALUES (?, ?) "
+                "ON CONFLICT(provider_id, event_id) DO NOTHING",
+                ((snapshot.provider_id, event.id) for event in snapshot.events),
+            )
             self._clear_latest_scope(
                 connection,
                 snapshot.provider_id,
@@ -407,18 +417,34 @@ class SQLiteQuoteRepository:
                 ).fetchall()
         return tuple(self._row_to_quote(row) for row in rows)
 
-    def load_events(self) -> tuple[Event, ...]:
-        query = """
+    def load_events(self, provider_id: str | None = None) -> tuple[Event, ...]:
+        provider_clause = (
+            "WHERE EXISTS (SELECT 1 FROM provider_events pe "
+            "WHERE pe.event_id = e.id AND pe.provider_id = ?)"
+            if provider_id
+            else ""
+        )
+        query = f"""
             SELECT e.id, e.league_id, e.start_time, e.name,
                    hp.id AS home_id, hp.name AS home_name,
                    ap.id AS away_id, ap.name AS away_name
             FROM events e
             JOIN participants hp ON hp.id = e.home_id
             JOIN participants ap ON ap.id = e.away_id
+            {provider_clause}
             ORDER BY e.start_time
         """
         with self._connection() as connection:
-            rows = connection.execute(query).fetchall()
+            connection.execute(
+                "INSERT OR IGNORE INTO provider_events(provider_id, event_id) "
+                "SELECT DISTINCT q.provider_id, m.event_id FROM quotes q "
+                "JOIN outcomes o ON o.id = q.outcome_id "
+                "JOIN markets m ON m.id = o.market_id"
+            )
+            rows = connection.execute(
+                query,
+                (provider_id,) if provider_id else (),
+            ).fetchall()
         return tuple(
             Event(
                 id=str(row["id"]),

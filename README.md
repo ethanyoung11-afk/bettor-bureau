@@ -41,8 +41,9 @@ and markets you want, and press **Refresh Odds**. Page loads, visitors, filters,
 navigation never call the provider. The initial refresh scope supports NFL, NCAAF, CFL, NBA,
 and NHL, including available moneylines, spreads, totals, and player props. Starter accounts
 require one odds request per sportsbook, so a full ten-book update normally costs about ten
-requests. The first refresh also caches the provider's league and market catalogs, so it can use
-a few additional requests.
+requests. The app also syncs each league's complete fixture schedule once per week so the Games
+page includes events before odds are posted; these rows display **Odds not available yet** until
+a sportsbook publishes a line. Catalog and fixture discovery can use a few additional requests.
 
 Every managed refresh rechecks affected +EV recommendations. Price moves or removed markets
 deactivate the recommendation without deleting its history. Failed requests preserve the last

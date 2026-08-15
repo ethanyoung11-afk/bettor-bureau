@@ -14,6 +14,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
@@ -156,6 +157,8 @@ LEAGUE_SPORTS = {
     "nhl": "Hockey",
 }
 CORE_REFRESH_LEAGUES = ("NFL", "NCAAF", "CFL", "NBA", "NHL")
+DISPLAY_TIMEZONE = ZoneInfo("America/Vancouver")
+SCHEDULE_REFRESH_INTERVAL = timedelta(days=7)
 RECOMMENDED_MINIMUM_EV = OFFICIAL_MINIMUM_EV
 RECOMMENDED_MINIMUM_IMPLIED_PROBABILITY = OFFICIAL_MINIMUM_BREAK_EVEN_PROBABILITY
 RECOMMENDED_MINIMUM_AMERICAN_ODDS = OFFICIAL_MINIMUM_AMERICAN_ODDS
@@ -251,10 +254,7 @@ def _team_logo_markup(team_name: str, league_id: str) -> str:
             f'<img src="{html.escape(logo_url, quote=True)}" alt="" loading="lazy">'
             "</span>"
         )
-    return (
-        '<span class="ev-team-logo">'
-        f'<span>{html.escape(initials.upper())}</span></span>'
-    )
+    return f'<span class="ev-team-logo"><span>{html.escape(initials.upper())}</span></span>'
 
 
 def _json_object(value: str | None) -> dict[str, Any]:
@@ -335,6 +335,21 @@ def _cached_settings(repository: QuoteRepository, *, ttl_seconds: int = 60) -> d
     return dict(settings)
 
 
+def _schedule_refresh_due(
+    settings: dict[str, str],
+    *,
+    as_of: datetime | None = None,
+) -> bool:
+    current = as_of or datetime.now(UTC)
+    try:
+        refreshed_at = datetime.fromisoformat(settings.get("oddspapi_schedule_refreshed_at", ""))
+        if refreshed_at.tzinfo is None or refreshed_at.utcoffset() is None:
+            return True
+    except ValueError:
+        return True
+    return current - refreshed_at.astimezone(UTC) >= SCHEDULE_REFRESH_INTERVAL
+
+
 @st.fragment(run_every=60)  # type: ignore[untyped-decorator]
 def _watch_for_shared_odds_updates(
     repository: QuoteRepository,
@@ -347,9 +362,7 @@ def _watch_for_shared_odds_updates(
     if isinstance(last_checked, datetime) and now - last_checked < timedelta(seconds=55):
         return
     st.session_state[checked_key] = now
-    latest = repository.api_usage_summary(
-        provider_id, as_of=now
-    ).last_successful_refresh
+    latest = repository.api_usage_summary(provider_id, as_of=now).last_successful_refresh
     signature = latest.isoformat() if latest else "never"
     state_key = f"shared_snapshot_signature_{provider_id}"
     previous = st.session_state.get(state_key)
@@ -372,7 +385,7 @@ def _load_view_snapshot(
             return quotes, events
     snapshot = (
         repository.load_latest_quotes(provider_id),
-        repository.load_events(),
+        repository.load_events(provider_id),
     )
     st.session_state[state_key] = snapshot
     return snapshot
@@ -475,16 +488,16 @@ def _render_refresh_admin_status(
         st.session_state[cache_key] = (now, counts, usage)
     last_refresh = usage.last_successful_refresh
     last_refresh_label = (
-        last_refresh.astimezone().strftime("%I:%M %p").lstrip("0")
+        last_refresh.astimezone(DISPLAY_TIMEZONE).strftime("%I:%M %p").lstrip("0")
         if last_refresh
         else "Not yet"
     )
-    st.markdown(
-        f"**Current recommendations**  \n{counts.active} active · {counts.stale} stale"
-    )
+    st.markdown(f"**Current recommendations**  \n{counts.active} active · {counts.stale} stale")
     st.markdown(f"**Last successful refresh**  \n{last_refresh_label}")
     if usage.last_failed_refresh is not None:
-        failed_label = usage.last_failed_refresh.astimezone().strftime("%b %d, %I:%M %p")
+        failed_label = usage.last_failed_refresh.astimezone(DISPLAY_TIMEZONE).strftime(
+            "%b %d, %I:%M %p"
+        )
         st.caption(f"Last failed update: {failed_label}")
     latest = st.session_state.get("last_refresh_diagnostics")
     if isinstance(latest, RefreshDiagnostics):
@@ -929,6 +942,13 @@ def _inject_theme() -> None:
         }
         .games-event[open] .games-chevron { transform:rotate(180deg); }
         .games-event-body { padding:.8rem .9rem 1rem; background:#0a1522; }
+        .games-odds-pending {
+            display:flex; align-items:center; justify-content:space-between; gap:18px;
+            padding:.9rem 1rem; border:1px dashed #2b3b4f; border-radius:7px;
+            color:#9eabbc; background:#08131f;
+        }
+        .games-odds-pending strong { color:#dce4ed; font-size:.9rem; }
+        .games-odds-pending span { font-size:.8rem; text-align:right; }
         .games-market-group {
             border:1px solid #26374b; border-radius:7px; background:#08131f;
         }
@@ -1457,11 +1477,7 @@ def _render_page_header() -> Any:
             [6.4, 1.25, 1.35], vertical_alignment="center"
         )
         with title_column:
-            brand_mark = (
-                Path(__file__).resolve().parents[2]
-                / "assets"
-                / "bettor-bureau-mark.png"
-            )
+            brand_mark = Path(__file__).resolve().parents[2] / "assets" / "bettor-bureau-mark.png"
             with st.container(key="bettor_bureau_brand"):
                 st.markdown(
                     '<div class="bettor-bureau-lockup">'
@@ -1478,9 +1494,7 @@ def _render_page_header() -> Any:
                 key="decimal_odds",
                 help="Switch off for American odds.",
             )
-            st.session_state["odds_format"] = (
-                "Decimal" if decimal_odds else "American"
-            )
+            st.session_state["odds_format"] = "Decimal" if decimal_odds else "American"
     return status_container
 
 
@@ -1507,9 +1521,7 @@ def _render_owner_panel(
                 min(1.0, used / credit_limit),
                 text=f"{used} of {credit_limit} calls used",
             )
-            st.caption(
-                "Only the owner and the central scheduled updater can spend API calls."
-            )
+            st.caption("Only the owner and the central scheduled updater can spend API calls.")
             st.button(
                 "Refresh latest odds",
                 icon=":material/refresh:",
@@ -1681,7 +1693,7 @@ def _render_odds_status(
     age = _elapsed_compact_label(last_refresh, as_of)
     target.markdown(
         f'<div class="ev-update-status"><span>Odds last refreshed: '
-        f'<strong>{age}</strong></span></div>',
+        f"<strong>{age}</strong></span></div>",
         unsafe_allow_html=True,
     )
 
@@ -1691,9 +1703,7 @@ def _load_defaults(repository: QuoteRepository) -> None:
         return
     stored = _cached_settings(repository)
     st.session_state.setdefault("bankroll", stored.get("bankroll", "1000"))
-    st.session_state.setdefault(
-        "freshness_minutes", int(stored.get("freshness_minutes", "5"))
-    )
+    st.session_state.setdefault("freshness_minutes", int(stored.get("freshness_minutes", "5")))
     st.session_state.setdefault("min_roi", float(stored.get("min_roi", "0.25")))
     st.session_state.setdefault("min_ev", float(stored.get("min_ev", "2.0")))
     st.session_state.setdefault("odds_format", "American")
@@ -1799,9 +1809,7 @@ def _sidebar(
             league_defaults_key = f"refresh_league_defaults_v2_{_provider_id(data_mode)}"
             if not st.session_state.get(league_defaults_key):
                 for league in supported_leagues:
-                    st.session_state[
-                        f"refresh_league_{_provider_id(data_mode)}_{league}"
-                    ] = True
+                    st.session_state[f"refresh_league_{_provider_id(data_mode)}_{league}"] = True
                 st.session_state[league_defaults_key] = True
             with st.expander("Odds Data", expanded=False):
                 st.caption("Enabled sports")
@@ -2090,9 +2098,7 @@ def _event_odds_frame(
     event: Event | None = None,
 ) -> pd.DataFrame:
     selected_books = set(sportsbook_names)
-    display_quotes = tuple(
-        quote for quote in quotes if quote.sportsbook.name in selected_books
-    )
+    display_quotes = tuple(quote for quote in quotes if quote.sportsbook.name in selected_books)
     best_price_by_outcome: dict[str, Decimal] = {}
     for quote in display_quotes:
         outcome_id = quote.outcome.id
@@ -2124,8 +2130,7 @@ def _event_odds_frame(
 def _highlight_best_price(value: object) -> str:
     if isinstance(value, str) and value.startswith("★"):
         return (
-            "background-color: #123525; color: #6ee7b7; font-weight: 750; "
-            "border: 1px solid #1f6b48"
+            "background-color: #123525; color: #6ee7b7; font-weight: 750; border: 1px solid #1f6b48"
         )
     return ""
 
@@ -2144,9 +2149,7 @@ def _game_market_sections_markup(
     )
     sections: list[str] = []
     for kind in kind_order:
-        market_quotes = tuple(
-            quote for quote in event_quotes if quote.outcome.market.kind is kind
-        )
+        market_quotes = tuple(quote for quote in event_quotes if quote.outcome.market.kind is kind)
         if not market_quotes:
             continue
         quotes_by_outcome: dict[str, dict[str, Quote]] = {}
@@ -2173,9 +2176,7 @@ def _game_market_sections_markup(
             for sportsbook in sportsbook_names:
                 book_quote = book_quotes.get(sportsbook)
                 if book_quote is None:
-                    cells.append(
-                        '<td class="games-price-cell games-unavailable">—</td>'
-                    )
+                    cells.append('<td class="games-price-cell games-unavailable">—</td>')
                     continue
                 displayed_price = format_odds(book_quote.decimal_odds, odds_format)
                 is_best = book_quote.decimal_odds == best_price
@@ -2205,10 +2206,8 @@ def _game_market_sections_markup(
                     )
             rows.append(
                 '<tr><td class="games-selection">'
-                f'<strong>{html.escape(selection)}</strong>'
-                f'<small>{html.escape(market_label)}</small></td>'
-                + "".join(cells)
-                + "</tr>"
+                f"<strong>{html.escape(selection)}</strong>"
+                f"<small>{html.escape(market_label)}</small></td>" + "".join(cells) + "</tr>"
             )
 
         book_headers = "".join(
@@ -2218,7 +2217,7 @@ def _game_market_sections_markup(
         open_attribute = " open" if not sections else ""
         sections.append(
             f'<details class="games-market-group"{open_attribute}>'
-            f'<summary>{html.escape(market_name)}</summary>'
+            f"<summary>{html.escape(market_name)}</summary>"
             '<div class="games-odds-scroll"><table class="games-odds-table">'
             f"<thead><tr><th>Selection</th>{book_headers}</tr></thead>"
             f"<tbody>{''.join(rows)}</tbody></table></div></details>"
@@ -2232,7 +2231,7 @@ def _game_event_markup(
     sportsbook_names: list[str],
     odds_format: str,
 ) -> str:
-    local_start = event.start_time.astimezone()
+    local_start = event.start_time.astimezone(DISPLAY_TIMEZONE)
     time_label = local_start.strftime("%I:%M %p").lstrip("0")
     home_name, away_name = _event_team_names(event)
     away_logo = _team_logo_markup(away_name, event.league_id)
@@ -2243,15 +2242,21 @@ def _game_event_markup(
         odds_format,
         event,
     )
+    if not market_markup:
+        market_markup = (
+            '<div class="games-odds-pending"><strong>Odds not available yet</strong>'
+            "<span>This game will populate automatically after sportsbooks post lines.</span>"
+            "</div>"
+        )
     return (
         '<details class="games-event">'
-        '<summary>'
+        "<summary>"
         f'<span class="games-time">{html.escape(time_label)}</span>'
         '<span class="games-matchup"><span class="games-team-logos">'
         f"{away_logo}{home_logo}</span>"
         '<span class="games-matchup-copy">'
-        f'<strong>{html.escape(event.name)}</strong>'
-        f'<small>{html.escape(event.league_id.upper())}</small></span></span>'
+        f"<strong>{html.escape(event.name)}</strong>"
+        f"<small>{html.escape(event.league_id.upper())}</small></span></span>"
         '<span class="games-chevron">⌄</span>'
         "</summary>"
         f'<div class="games-event-body">{market_markup}</div></details>'
@@ -2267,24 +2272,20 @@ def _render_event_board(
     *,
     is_admin: bool = False,
 ) -> None:
-    quoted_event_ids = {quote.outcome.market.event_id for quote in quotes}
     available_events = sorted(
-        (event for event in events if event.id in quoted_event_ids),
+        events,
         key=lambda event: (event.start_time, event.name),
     )
     if not available_events:
         st.info("No saved upcoming events match the selected leagues. Refresh the latest odds.")
         return
-    grouped_quotes: dict[str, list[Quote]] = {
-        event.id: [] for event in available_events
-    }
+    grouped_quotes: dict[str, list[Quote]] = {event.id: [] for event in available_events}
     for quote in quotes:
         event_quotes = grouped_quotes.get(quote.outcome.market.event_id)
         if event_quotes is not None:
             event_quotes.append(quote)
     quotes_by_event = {
-        event_id: tuple(event_quotes)
-        for event_id, event_quotes in grouped_quotes.items()
+        event_id: tuple(event_quotes) for event_id, event_quotes in grouped_quotes.items()
     }
 
     # Reset the older conflicting Games filters once. Previously a saved NFL league
@@ -2306,18 +2307,21 @@ def _render_event_board(
     if st.session_state.get("games_sport") not in sport_options:
         st.session_state["games_sport"] = "All Sports"
     with st.container(key="games_sport_filter"):
-        selected_sport = st.segmented_control(
-            "Sport",
-            sport_options,
-            default="All Sports",
-            key="games_sport",
-            label_visibility="collapsed",
-            format_func=lambda sport: (
-                f"All Sports ({len(available_events)})"
-                if sport == "All Sports"
-                else f"{sport} ({sport_counts[sport]})"
-            ),
-        ) or "All Sports"
+        selected_sport = (
+            st.segmented_control(
+                "Sport",
+                sport_options,
+                default="All Sports",
+                key="games_sport",
+                label_visibility="collapsed",
+                format_func=lambda sport: (
+                    f"All Sports ({len(available_events)})"
+                    if sport == "All Sports"
+                    else f"{sport} ({sport_counts[sport]})"
+                ),
+            )
+            or "All Sports"
+        )
 
     league_events = (
         available_events
@@ -2343,11 +2347,15 @@ def _render_event_board(
             [2.2, 1, 1], vertical_alignment="bottom"
         )
         with search_column:
-            search_query = st.text_input(
-                "Search games, teams, or players",
-                placeholder="Search games, teams, or players…",
-                key="games_search",
-            ).strip().casefold()
+            search_query = (
+                st.text_input(
+                    "Search games, teams, or players",
+                    placeholder="Search games, teams, or players…",
+                    key="games_search",
+                )
+                .strip()
+                .casefold()
+            )
         with league_column:
             selected_league = st.selectbox(
                 "League",
@@ -2366,7 +2374,7 @@ def _render_event_board(
                 key="games_date",
             )
 
-    local_today = datetime.now().astimezone().date()
+    local_today = datetime.now(DISPLAY_TIMEZONE).date()
     filtered_events: list[Event] = []
     for event in available_events:
         event_quote_rows = quotes_by_event[event.id]
@@ -2380,7 +2388,7 @@ def _render_event_board(
                 *(_selection_label(quote, event) for quote in event_quote_rows),
             ]
         ).casefold()
-        event_date = event.start_time.astimezone().date()
+        event_date = event.start_time.astimezone(DISPLAY_TIMEZONE).date()
         date_matches = (
             selected_date == "All upcoming"
             or (selected_date == "Today" and event_date == local_today)
@@ -2391,7 +2399,8 @@ def _render_event_board(
             )
         )
         if (
-            search_query and search_query not in searchable
+            search_query
+            and search_query not in searchable
             or selected_league != "All leagues"
             and event.league_id.upper() != selected_league
             or selected_sport != "All Sports"
@@ -2403,8 +2412,8 @@ def _render_event_board(
 
     st.markdown(
         '<div class="games-heading"><div><h2>All Games</h2>'
-        '<p>Find an event, open its markets, and compare every available sportsbook.</p>'
-        f'</div><span>{len(filtered_events)} upcoming games</span></div>',
+        "<p>Find an event, open its markets, and compare every available sportsbook.</p>"
+        f"</div><span>{len(filtered_events)} upcoming games</span></div>",
         unsafe_allow_html=True,
     )
     if not filtered_events:
@@ -2418,18 +2427,20 @@ def _render_event_board(
     visible_events = filtered_events[:visible_count]
     day_groups: dict[date, list[Event]] = {}
     for event in visible_events:
-        day_groups.setdefault(event.start_time.astimezone().date(), []).append(event)
+        day_groups.setdefault(event.start_time.astimezone(DISPLAY_TIMEZONE).date(), []).append(
+            event
+        )
     for event_date, day_events in day_groups.items():
         if event_date == local_today:
             day_label = "Today"
         elif event_date == local_today + timedelta(days=1):
             day_label = "Tomorrow"
         else:
-            day_label = day_events[0].start_time.astimezone().strftime("%A · %b %d")
+            day_label = day_events[0].start_time.astimezone(DISPLAY_TIMEZONE).strftime("%A · %b %d")
         st.markdown(
             '<div class="games-day-heading">'
-            f'<strong>{html.escape(day_label)}</strong>'
-            f'<span>{len(day_events)} game{"s" if len(day_events) != 1 else ""}</span></div>',
+            f"<strong>{html.escape(day_label)}</strong>"
+            f"<span>{len(day_events)} game{'s' if len(day_events) != 1 else ''}</span></div>",
             unsafe_allow_html=True,
         )
         event_rows = "".join(
@@ -2605,11 +2616,9 @@ def _render_ev_filter_bar(
     )
 
     with st.container(key="ev_filter_bar"):
-        sport_col, market_col, ev_col, book_col, more_col, _, sort_label_col, sort_col = (
-            st.columns(
-                [1.08, 1.05, 1.0, 1.25, 1.05, 1.5, 0.45, 1.35],
-                vertical_alignment="bottom",
-            )
+        sport_col, market_col, ev_col, book_col, more_col, _, sort_label_col, sort_col = st.columns(
+            [1.08, 1.05, 1.0, 1.25, 1.05, 1.5, 0.45, 1.35],
+            vertical_alignment="bottom",
         )
         sport = sport_col.selectbox(
             "Sport",
@@ -2693,9 +2702,7 @@ def _render_ev_filter_bar(
                         _save_sportsbook_preferences if persist_preferences else _set_ev_page
                     ),
                     args=(
-                        (repository, tuple(available_books), mode)
-                        if persist_preferences
-                        else (0,)
+                        (repository, tuple(available_books), mode) if persist_preferences else (0,)
                     ),
                 )
                 st.form_submit_button(
@@ -2709,8 +2716,7 @@ def _render_ev_filter_bar(
                     ),
                     width="stretch",
                     help=(
-                        "Clears the restriction so every eligible sportsbook may be "
-                        "recommended."
+                        "Clears the restriction so every eligible sportsbook may be recommended."
                     ),
                 )
                 st.caption(
@@ -2792,9 +2798,7 @@ def _render_ev_filter_bar(
                     width="stretch",
                 )
 
-        sort_label_col.markdown(
-            '<div class="ev-sort-label">Sort by:</div>', unsafe_allow_html=True
-        )
+        sort_label_col.markdown('<div class="ev-sort-label">Sort by:</div>', unsafe_allow_html=True)
         sort_by = sort_col.selectbox(
             "Sort by",
             [
@@ -2835,9 +2839,7 @@ def _render_ev_filter_bar(
     minimum_american = (
         int(st.session_state.get("ev_min_american", -200)) if use_odds_range else None
     )
-    maximum_american = (
-        int(st.session_state.get("ev_max_american", 300)) if use_odds_range else None
-    )
+    maximum_american = int(st.session_state.get("ev_max_american", 300)) if use_odds_range else None
     minimum_consensus = int(consensus_preset.rstrip("+")) if consensus_preset != "Any" else 2
     starts_before = {
         "Pre-game": None,
@@ -2852,9 +2854,7 @@ def _render_ev_filter_bar(
     if implied_percent > 0:
         chips.append(f"Recommended probability ≥ {implied_percent}%")
     if use_odds_range:
-        chips.append(
-            f"Recommended odds: {minimum_american:+d} to {maximum_american:+d}"
-        )
+        chips.append(f"Recommended odds: {minimum_american:+d} to {maximum_american:+d}")
     if consensus_preset != "Any":
         chips.append(f"Consensus {consensus_preset}")
     if start_window != "Any time":
@@ -2922,11 +2922,7 @@ def _values_for_selected_sportsbooks(
     if not sportsbooks:
         return values
     selected = {sportsbook.casefold() for sportsbook in sportsbooks}
-    return tuple(
-        item
-        for item in values
-        if item.quote.sportsbook.name.casefold() in selected
-    )
+    return tuple(item for item in values if item.quote.sportsbook.name.casefold() in selected)
 
 
 def _filter_value_opportunities(
@@ -2999,9 +2995,7 @@ def _exclude_recommended_opportunities(
     recommended: tuple[ValueOpportunity, ...],
 ) -> tuple[ValueOpportunity, ...]:
     """Return the complete filtered +EV list without repeating the top picks."""
-    recommended_keys = {
-        (item.quote.sportsbook.id, item.quote.outcome.id) for item in recommended
-    }
+    recommended_keys = {(item.quote.sportsbook.id, item.quote.outcome.id) for item in recommended}
     return tuple(
         item
         for item in values
@@ -3018,19 +3012,13 @@ def _sort_more_ev_values(
         return tuple(
             sorted(
                 values,
-                key=lambda item: event_map[
-                    item.quote.outcome.market.event_id
-                ].start_time,
+                key=lambda item: event_map[item.quote.outcome.market.event_id].start_time,
             )
         )
     if sort_by == "Best Odds":
-        return tuple(
-            sorted(values, key=lambda item: item.quote.decimal_odds, reverse=True)
-        )
+        return tuple(sorted(values, key=lambda item: item.quote.decimal_odds, reverse=True))
     if sort_by == "Win Probability":
-        return tuple(
-            sorted(values, key=lambda item: item.fair_probability, reverse=True)
-        )
+        return tuple(sorted(values, key=lambda item: item.fair_probability, reverse=True))
     return tuple(sorted(values, key=lambda item: item.expected_value, reverse=True))
 
 
@@ -3068,11 +3056,7 @@ def _official_performance(bets: tuple[TrackedBet, ...]) -> OfficialPerformance:
     pending = sum(bet.status is BetStatus.PENDING for bet in official)
     units = sum((bet.profit_loss or Decimal("0") for bet in official), Decimal("0"))
     settled_stake = sum(
-        (
-            bet.stake
-            for bet in official
-            if bet.status in {BetStatus.WON, BetStatus.LOST}
-        ),
+        (bet.stake for bet in official if bet.status in {BetStatus.WON, BetStatus.LOST}),
         Decimal("0"),
     )
     roi = units / settled_stake if settled_stake else Decimal("0")
@@ -3091,9 +3075,7 @@ def _quotes_for_opportunity(
     opportunity: ValueOpportunity,
     quotes: tuple[Quote, ...],
 ) -> tuple[Quote, ...]:
-    matching = tuple(
-        quote for quote in quotes if quote.outcome.id == opportunity.quote.outcome.id
-    )
+    matching = tuple(quote for quote in quotes if quote.outcome.id == opportunity.quote.outcome.id)
     return tuple(
         sorted(
             deduplicate_quotes(matching),
@@ -3126,8 +3108,7 @@ def _sportsbook_event_url(quote: Quote) -> str | None:
         parsed = urlparse(candidate)
         hostname = (parsed.hostname or "").lower()
         if parsed.scheme == "https" and any(
-            hostname == domain or hostname.endswith(f".{domain}")
-            for domain in allowed_domains
+            hostname == domain or hostname.endswith(f".{domain}") for domain in allowed_domains
         ):
             return candidate
     return None
@@ -3182,14 +3163,14 @@ def _render_recommended_value_card_legacy(
             f'<div class="value-bet-event">{html.escape(event.name) if event else "Event"} · '
             f"{html.escape(market_label)}"
             + (
-                f" · {event.start_time.astimezone().strftime('%a %b %d, %I:%M %p')}"
+                f" · {event.start_time.astimezone(DISPLAY_TIMEZONE).strftime('%a %b %d, %I:%M %p')}"
                 if event
                 else ""
             )
             + "</div>"
             '<div class="recommended-card-grid">'
             '<div class="recommended-card-metric"><small>Bet at</small>'
-            f'<strong>{html.escape(sportsbook)}</strong></div>'
+            f"<strong>{html.escape(sportsbook)}</strong></div>"
             '<div class="recommended-card-metric"><small>Best odds</small>'
             f'<strong class="positive">{offered_odds}</strong></div>'
             '<div class="recommended-card-metric"><small>Estimated EV</small>'
@@ -3229,9 +3210,7 @@ def _render_priority_value_bets_legacy(
         )
         return
 
-    ranked_values = tuple(
-        sorted(values, key=lambda item: item.expected_value, reverse=True)
-    )
+    ranked_values = tuple(sorted(values, key=lambda item: item.expected_value, reverse=True))
     recommended = recommended_values
     st.markdown(
         f'<div class="ev-list-title">Recommended Bets '
@@ -3287,10 +3266,13 @@ def _render_priority_value_bets_legacy(
                     opponent = f"vs {home_name}"
                 else:
                     opponent = event.name
+                event_start_label = event.start_time.astimezone(DISPLAY_TIMEZONE).strftime(
+                    "%a %b %d, %I:%M %p"
+                )
                 st.markdown(
                     f'<div class="best-bet-opponent">{html.escape(opponent)}</div>'
                     f'<div class="best-bet-event">{event.league_id.upper()} · '
-                    f"{event.start_time.astimezone().strftime('%a %b %d, %I:%M %p')} · "
+                    f"{event_start_label} · "
                     f"{html.escape(market_label)}</div>",
                     unsafe_allow_html=True,
                 )
@@ -3311,7 +3293,7 @@ def _render_priority_value_bets_legacy(
                 f'<span class="ev-featured-info" title="{probability_tooltip}">ⓘ</span></div>'
                 '<div class="ev-probability-pair"><span>'
                 f"<strong>{top.fair_probability:.1%}</strong><small>Consensus estimate</small>"
-                '</span><em>vs.</em><span>'
+                "</span><em>vs.</em><span>"
                 f"<strong>{offered_probability:.1%}</strong>"
                 f"<small>Break-even at {offered_odds}</small></span></div></div>"
                 '<div class="ev-featured-metric"><div class="ev-featured-label">Fair Odds '
@@ -3319,7 +3301,7 @@ def _render_priority_value_bets_legacy(
                 'across multiple sportsbooks.">ⓘ</span></div>'
                 f'<div class="ev-featured-value">{fair_odds}</div>'
                 f'<div class="ev-featured-sub">By {top.reference_books}-book consensus</div>'
-                '</div></div>',
+                "</div></div>",
                 unsafe_allow_html=True,
             )
         with action_column:
@@ -3361,9 +3343,7 @@ def _render_priority_value_bets_legacy(
                     as_of,
                 )
 
-    recommended_keys = {
-        (item.quote.sportsbook.id, item.quote.outcome.id) for item in recommended
-    }
+    recommended_keys = {(item.quote.sportsbook.id, item.quote.outcome.id) for item in recommended}
     ordered_values = recommended + tuple(
         item
         for item in ranked_values
@@ -3412,6 +3392,9 @@ def _render_priority_value_bets_legacy(
         item_implied = implied_probability(item.quote.decimal_odds)
         item_range = _market_range_label(item, quotes, odds_format)
         item_book = item.quote.sportsbook.name
+        item_start_label = item_event.start_time.astimezone(DISPLAY_TIMEZONE).strftime(
+            "%a %b %d, %I:%M %p"
+        )
         item_url = _sportsbook_bet_url(item.quote)
         link_markup = (
             f'<a class="ev-action" href="{html.escape(item_url)}" target="_blank" '
@@ -3424,8 +3407,8 @@ def _render_priority_value_bets_legacy(
             '<details class="ev-table-row"><summary class="ev-grid">'
             f'<span class="ev-rank">#{ev_rank[item.quote.outcome.id]}</span>'
             f'<span class="ev-matchup"><strong>{html.escape(item_selection)}</strong>'
-            f'<span>{html.escape(item_event.name)}<br>{item_event.league_id.upper()} · '
-            f"{item_event.start_time.astimezone().strftime('%a %b %d, %I:%M %p')}</span></span>"
+            f"<span>{html.escape(item_event.name)}<br>{item_event.league_id.upper()} · "
+            f"{item_start_label}</span></span>"
             f'<span class="ev-market ev-cell-main">{html.escape(item_market)}</span>'
             f'<span class="ev-best-odds"><span class="ev-odds">{item_odds}</span>'
             f'<span class="ev-cell-sub">{html.escape(item_book)}</span></span>'
@@ -3436,7 +3419,7 @@ def _render_priority_value_bets_legacy(
             f'<span class="ev-fair ev-cell-main">{item_fair_odds}'
             f'<span class="ev-cell-sub">By {item.reference_books}-book consensus</span></span>'
             f'<span class="ev-positive">{_format_edge(item.expected_value)}'
-            f'<small>{_recommendation_freshness(item.quote, as_of)}</small></span>'
+            f"<small>{_recommendation_freshness(item.quote, as_of)}</small></span>"
             f'<span class="ev-range ev-cell-main">{item_range}</span>'
             f'<span class="ev-best-book ev-cell-main"><strong>{html.escape(item_book)}</strong>'
             f'<span class="ev-cell-sub">{item_odds}</span></span>'
@@ -3454,9 +3437,7 @@ def _render_priority_value_bets_legacy(
         [8, 1, 1],
         vertical_alignment="center",
     )
-    page_label.caption(
-        f"Showing {showing_from}–{showing_to} of {len(remaining)} additional bets"
-    )
+    page_label.caption(f"Showing {showing_from}–{showing_to} of {len(remaining)} additional bets")
     previous_column.button(
         "Previous",
         icon=":material/chevron_left:",
@@ -3505,7 +3486,7 @@ def _board_row_markup(
     sportsbook_url = sportsbook_event_url or _sportsbook_bet_url(opportunity.quote)
     market_label = html.escape(_market_label(opportunity.quote.outcome.market))
     edge_label = _format_edge(opportunity.expected_value)
-    start_label = event.start_time.astimezone().strftime("%a %b %d, %I:%M %p")
+    start_label = event.start_time.astimezone(DISPLAY_TIMEZONE).strftime("%a %b %d, %I:%M %p")
     logo_markup = _team_logo_markup(team_name, event.league_id)
     if rank == 1:
         rank_markup = '<span class="board-rank gold">1</span>'
@@ -3540,19 +3521,19 @@ def _board_row_markup(
         '<span class="board-matchup">'
         f"{logo_markup}"
         '<span class="board-matchup-copy">'
-        f'<strong>{html.escape(selection)}</strong>'
-        f'<span>vs {html.escape(opponent)}</span>'
-        f'<small>{event.league_id.upper()} · {start_label}</small></span></span>'
+        f"<strong>{html.escape(selection)}</strong>"
+        f"<span>vs {html.escape(opponent)}</span>"
+        f"<small>{event.league_id.upper()} · {start_label}</small></span></span>"
         f'<span class="board-cell board-market">{market_label}</span>'
         f'<span class="board-cell board-ev"><strong>{edge_label}</strong></span>'
         '<span class="board-cell board-odds">'
-        f'<strong>{offered_odds}</strong><small>{html.escape(sportsbook)}</small></span>'
+        f"<strong>{offered_odds}</strong><small>{html.escape(sportsbook)}</small></span>"
         '<span class="board-cell board-fair">'
-        f'<strong>{fair_odds}</strong></span>'
+        f"<strong>{fair_odds}</strong></span>"
         '<span class="board-cell board-win"><span class="board-win-stack">'
-        f'<strong>{opportunity.fair_probability:.1%}</strong>'
-        '<small>Consensus win probability</small>'
-        f'<em>{offered_probability:.1%} break-even</em></span></span>'
+        f"<strong>{opportunity.fair_probability:.1%}</strong>"
+        "<small>Consensus win probability</small>"
+        f"<em>{offered_probability:.1%} break-even</em></span></span>"
         f'<span class="board-action-cell">{action_markup}</span>'
         f'</summary><div class="ev-details">{details_markup}</div></details>'
     )
@@ -3563,25 +3544,25 @@ def _board_header_markup() -> str:
         '<div class="board-table-head board-grid">'
         '<span>#</span><span>MATCHUP</span><span class="board-market">MARKET</span>'
         '<span class="board-ev"><details class="board-info" name="board-tooltip">'
-        '<summary>EV ⓘ</summary>'
+        "<summary>EV ⓘ</summary>"
         '<div class="board-tooltip">Estimated long-term return using the consensus win '
-        'probability and the best available price.</div></details></span>'
+        "probability and the best available price.</div></details></span>"
         '<span class="board-odds"><details class="board-info" name="board-tooltip">'
-        '<summary>BEST ODDS ⓘ</summary>'
+        "<summary>BEST ODDS ⓘ</summary>"
         '<div class="board-tooltip">The highest payout currently offered by a sportsbook '
-        'you selected as available to bet with.</div></details></span>'
+        "you selected as available to bet with.</div></details></span>"
         '<span class="board-fair"><details class="board-info" name="board-tooltip">'
-        '<summary>FAIR ODDS ⓘ</summary>'
+        "<summary>FAIR ODDS ⓘ</summary>"
         '<div class="board-tooltip">Our estimated no-vig price. We remove each sportsbook’s '
-        'margin and average every other book with both sides of this exact market. The global '
-        'sportsbook list can be larger because not every book covers every event and market.'
-        '</div></details></span>'
+        "margin and average every other book with both sides of this exact market. The global "
+        "sportsbook list can be larger because not every book covers every event and market."
+        "</div></details></span>"
         '<span class="board-win"><details class="board-info align-right" '
         'name="board-tooltip">'
         '<summary>WIN PROBABILITY ⓘ</summary><div class="board-tooltip">The no-vig consensus '
-        'chance of winning. Break-even is the probability required at the offered price.'
-        '</div></details></span>'
-        '<span>ACTION</span></div>'
+        "chance of winning. Break-even is the probability required at the offered price."
+        "</div></details></span>"
+        "<span>ACTION</span></div>"
     )
 
 
@@ -3623,8 +3604,7 @@ def _render_priority_value_bets(
             for rank, opportunity in enumerate(recommended, start=1)
         )
         recommendation_content = (
-            f'<div class="ev-table-wrap">{_board_header_markup()}'
-            f"{recommendation_rows}</div>"
+            f'<div class="ev-table-wrap">{_board_header_markup()}{recommendation_rows}</div>'
         )
     else:
         recommendation_content = (
@@ -3645,9 +3625,7 @@ def _render_priority_value_bets(
     if not additional_values:
         return
     with st.container(key="more_ev_header"):
-        title_column, sort_column = st.columns(
-            [4, 1.15], vertical_alignment="bottom"
-        )
+        title_column, sort_column = st.columns([4, 1.15], vertical_alignment="bottom")
         title_column.markdown(
             '<div class="all-bets-title">Other +EV Bets '
             f'<span class="all-bets-count">{len(additional_values)}</span></div>',
@@ -3720,7 +3698,7 @@ def _value_comparison_markup(
         action = (
             f'<a class="ev-price-action" href="{html.escape(url, quote=True)}" '
             f'target="_blank" rel="noopener noreferrer">'
-            f'{"Bet" if event_url else "Open"} ↗</a>'
+            f"{'Bet' if event_url else 'Open'} ↗</a>"
             if url
             else '<span class="ev-price-action">Unavailable</span>'
         )
@@ -3730,8 +3708,8 @@ def _value_comparison_markup(
             f'<span class="ev-price-odds">{format_odds(quote.decimal_odds, odds_format)}</span>'
             f'<span class="ev-price-prob">{implied:.1%}</span>'
             f'<span class="ev-price-edge {edge_class}">{_format_edge(book_edge)}</span>'
-            f'<span>{_age_label(quote, as_of)} ago</span>'
-            f'<span>{action}</span></div>'
+            f"<span>{_age_label(quote, as_of)} ago</span>"
+            f"<span>{action}</span></div>"
         )
     contributors = html.escape(", ".join(opportunity.reference_sportsbooks))
     heading = html.escape(selection or opportunity.quote.outcome.side.value.title())
@@ -3739,12 +3717,12 @@ def _value_comparison_markup(
     updated = _age_label(opportunity.quote, as_of)
     return (
         '<div class="ev-price-heading">'
-        f'<span>Compare prices · {heading} {market_name}</span>'
-        f'<small>{len(price_rows)} sportsbooks · updated {updated} ago</small></div>'
+        f"<span>Compare prices · {heading} {market_name}</span>"
+        f"<small>{len(price_rows)} sportsbooks · updated {updated} ago</small></div>"
         '<div class="ev-price-header ev-price-grid">'
         '<span>Sportsbook</span><span>Odds</span><span class="ev-price-prob">Implied prob.</span>'
         '<span class="ev-price-edge">Edge vs fair</span><span>Updated</span><span>Action</span>'
-        '</div>'
+        "</div>"
         + "".join(price_rows)
         + '<details class="ev-consensus-details"><summary>Books used for fair odds</summary>'
         f"<span>{contributors}</span></details>"
@@ -3863,13 +3841,9 @@ def _render_official_performance(
     bets = _official_bets(repository.list_bets())
     performance = _official_performance(bets)
     with st.container(border=True, key="official_track_record"):
-        heading_column, note_column = st.columns(
-            [2.2, 5], vertical_alignment="bottom"
-        )
+        heading_column, note_column = st.columns([2.2, 5], vertical_alignment="bottom")
         heading_column.markdown("### The $10,000 Strategy")
-        note_column.caption(
-            "Hypothetical paper bankroll tracking every official recommendation."
-        )
+        note_column.caption("Hypothetical paper bankroll tracking every official recommendation.")
         record_column, profit_column, roi_column, bankroll_column, pending_column = st.columns(5)
         record_column.metric("Record", f"{performance.wins}-{performance.losses}")
         profit_column.metric(
@@ -3901,19 +3875,19 @@ def _render_official_performance(
         st.dataframe(
             [
                 {
-                    "Published": bet.created_at.astimezone().strftime("%b %d, %I:%M %p"),
+                    "Published": bet.created_at.astimezone(DISPLAY_TIMEZONE).strftime(
+                        "%b %d, %I:%M %p"
+                    ),
                     "Event": bet.event_name,
                     "Pick": f"{bet.selection} · {bet.market_label}",
                     "Book": bet.sportsbook,
                     "Odds": format_odds(bet.decimal_odds, odds_format),
                     "Wager": (
-                        f"${bet.stake * OFFICIAL_UNIT_VALUE_DOLLARS:,.0f} "
-                        f"({bet.stake:.2f}u)"
+                        f"${bet.stake * OFFICIAL_UNIT_VALUE_DOLLARS:,.0f} ({bet.stake:.2f}u)"
                     ),
                     "Result": bet.status.value.title(),
                     "P/L": (
-                        f"{_format_strategy_dollars(bet.profit_loss)} "
-                        f"({bet.profit_loss:+.2f}u)"
+                        f"{_format_strategy_dollars(bet.profit_loss)} ({bet.profit_loss:+.2f}u)"
                         if bet.profit_loss is not None
                         else "—"
                     ),
@@ -3927,9 +3901,7 @@ def _render_official_performance(
 
 def _render_official_settlement_controls(repository: QuoteRepository) -> None:
     pending = tuple(
-        bet
-        for bet in _official_bets(repository.list_bets())
-        if bet.status is BetStatus.PENDING
+        bet for bet in _official_bets(repository.list_bets()) if bet.status is BetStatus.PENDING
     )
     st.markdown("#### Official recommendation results")
     if not pending:
@@ -3969,7 +3941,7 @@ def _render_bets(
         {
             "League": event.league_id.upper(),
             "Event": event.name,
-            "Starts": event.start_time.astimezone().strftime("%a %I:%M %p"),
+            "Starts": event.start_time.astimezone(DISPLAY_TIMEZONE).strftime("%a %I:%M %p"),
         }
         for event in events
         if event.id in watched
@@ -4049,7 +4021,7 @@ def _render_bets(
     st.dataframe(
         [
             {
-                "Placed": bet.created_at.astimezone().strftime("%b %d %I:%M %p"),
+                "Placed": bet.created_at.astimezone(DISPLAY_TIMEZONE).strftime("%b %d %I:%M %p"),
                 "Event": bet.event_name,
                 "Market": bet.market_label,
                 "Selection": bet.selection,
@@ -4118,42 +4090,38 @@ def _render_launch_disclosures(mode: str) -> None:
     with disclosure:
         st.markdown(
             '<div class="legal-details">'
-            '<p><strong>Informational tool only.</strong> This product is an odds-comparison '
-            'and analysis tool, not a sportsbook, betting operator, financial adviser, or '
-            'guarantee of any outcome. It does not accept or place wagers. You are responsible '
-            'for confirming legal eligibility and complying with the rules in your location.</p>'
-            f'<p><strong>Odds and calculations.</strong> {data_warning} Fair odds, win '
-            'probability, expected value, arbitrage, and middle estimates depend on third-party '
-            'data and assumptions and may be incorrect. Verify the market, price, limits, rules, '
-            'and availability directly with the sportsbook before betting.</p>'
-            '<p><strong>Third-party links.</strong> Sportsbook links open independent third-party '
-            'services. Their eligibility requirements, geographic restrictions, privacy '
-            'practices, and terms apply. Sportsbook names and trademarks belong to their '
-            'respective owners; inclusion does not imply endorsement or partnership.</p>'
-            '<p><strong>Affiliate disclosure.</strong> If a sportsbook link is identified as an '
-            'affiliate link, this product may receive compensation when you use it. Compensation '
-            'does not change the calculation or ranking of opportunities. Unmarked links are not '
-            'represented as affiliate relationships.</p>'
-            '<p><strong>Privacy.</strong> This build stores preferences and optional bet-tracker '
-            'entries in the product database. Never enter sportsbook passwords, payment details, '
-            'or other sensitive account credentials. A hosted service should publish complete '
-            'Terms of Use and a Privacy Policy before collecting user accounts, analytics, or '
-            'other personal information.</p>'
-            '<p><strong>Need help?</strong> Call Gambling Support BC at '
+            "<p><strong>Informational tool only.</strong> This product is an odds-comparison "
+            "and analysis tool, not a sportsbook, betting operator, financial adviser, or "
+            "guarantee of any outcome. It does not accept or place wagers. You are responsible "
+            "for confirming legal eligibility and complying with the rules in your location.</p>"
+            f"<p><strong>Odds and calculations.</strong> {data_warning} Fair odds, win "
+            "probability, expected value, arbitrage, and middle estimates depend on third-party "
+            "data and assumptions and may be incorrect. Verify the market, price, limits, rules, "
+            "and availability directly with the sportsbook before betting.</p>"
+            "<p><strong>Third-party links.</strong> Sportsbook links open independent third-party "
+            "services. Their eligibility requirements, geographic restrictions, privacy "
+            "practices, and terms apply. Sportsbook names and trademarks belong to their "
+            "respective owners; inclusion does not imply endorsement or partnership.</p>"
+            "<p><strong>Affiliate disclosure.</strong> If a sportsbook link is identified as an "
+            "affiliate link, this product may receive compensation when you use it. Compensation "
+            "does not change the calculation or ranking of opportunities. Unmarked links are not "
+            "represented as affiliate relationships.</p>"
+            "<p><strong>Privacy.</strong> This build stores preferences and optional bet-tracker "
+            "entries in the product database. Never enter sportsbook passwords, payment details, "
+            "or other sensitive account credentials. A hosted service should publish complete "
+            "Terms of Use and a Privacy Policy before collecting user accounts, analytics, or "
+            "other personal information.</p>"
+            "<p><strong>Need help?</strong> Call Gambling Support BC at "
             '<a href="tel:+18887956111">1-888-795-6111</a> (free, confidential, 24/7) or '
             '<a href="https://www2.gov.bc.ca/gov/content/sports-culture/gambling-fundraising/'
             'gambling-support-bc" target="_blank" rel="noopener noreferrer">visit Gambling '
-            'Support BC ↗</a>.</p></div>',
+            "Support BC ↗</a>.</p></div>",
             unsafe_allow_html=True,
         )
 
 
 def run() -> None:
-    app_icon = (
-        Path(__file__).resolve().parents[2]
-        / "assets"
-        / "bettor-bureau-app-icon.png"
-    )
+    app_icon = Path(__file__).resolve().parents[2] / "assets" / "bettor-bureau-app-icon.png"
     st.set_page_config(
         page_title="Bettor Bureau",
         page_icon=str(app_icon),
@@ -4179,11 +4147,7 @@ def run() -> None:
         selected_provider_id,
     )
     available_books = sorted(
-        {
-            quote.sportsbook.name
-            for quote in preload_quotes
-        }
-        | set(STARTER_BOOKS),
+        {quote.sportsbook.name for quote in preload_quotes} | set(STARTER_BOOKS),
         key=_book_sort_key,
     )
     controls = _sidebar(repository, is_admin=is_admin)
@@ -4205,9 +4169,7 @@ def run() -> None:
 
     if controls["refresh"]:
         if controls["mode"] != "Demo" and not controls["api_key"]:
-            provider_name = (
-                "OddsPapi" if controls["mode"] == "OddsPapi Free" else "The Odds API"
-            )
+            provider_name = "OddsPapi" if controls["mode"] == "OddsPapi Free" else "The Odds API"
             st.error(f"Enter an {provider_name} key before refreshing live odds.")
         else:
             provider: OddsProvider
@@ -4218,12 +4180,11 @@ def run() -> None:
                 playnow_resolver = PlayNowEventResolver()
                 stored_tournaments = {
                     str(key): int(value)
-                    for key, value in _json_object(
-                        stored.get("oddspapi_tournament_ids")
-                    ).items()
+                    for key, value in _json_object(stored.get("oddspapi_tournament_ids")).items()
                 }
                 provider = OddsPapiProvider(
                     api_key=controls["api_key"],
+                    include_schedule=_schedule_refresh_due(stored),
                     bookmaker_slugs=tuple(
                         ODDSPAPI_BOOK_SLUGS[book]
                         for book in STARTER_BOOKS
@@ -4258,9 +4219,7 @@ def run() -> None:
                     ),
                     market_keys=tuple(selected_market_keys),
                     market_kinds=tuple(
-                        MARKET_KINDS[key]
-                        for key in selected_market_keys
-                        if key in MARKET_KINDS
+                        MARKET_KINDS[key] for key in selected_market_keys if key in MARKET_KINDS
                     ),
                 )
                 with st.spinner("Refreshing odds…"):
@@ -4279,6 +4238,14 @@ def run() -> None:
                         "oddspapi_market_catalog",
                         json.dumps(provider.market_catalog, separators=(",", ":")),
                     )
+                    if (
+                        provider.include_schedule
+                        and diagnostics.status is RefreshResultStatus.SUCCESS
+                    ):
+                        repository.save_setting(
+                            "oddspapi_schedule_refreshed_at",
+                            diagnostics.finished_at.isoformat(),
+                        )
                     _record_oddspapi_requests(repository, provider.request_count)
                 st.session_state["refresh_notice"] = _diagnostic_message(diagnostics)
                 _invalidate_view_snapshot(provider.provider_id)
@@ -4293,23 +4260,13 @@ def run() -> None:
         stored_events = preload_events
     else:
         latest_quotes, stored_events = _load_view_snapshot(repository, provider_id)
-    quoted_event_ids = {quote.outcome.market.event_id for quote in latest_quotes}
-    all_events = tuple(
-        event
-        for event in stored_events
-        if event.start_time > as_of
-        and event.id in quoted_event_ids
-    )
+    all_events = tuple(event for event in stored_events if event.start_time > as_of)
     all_event_map = {event.id: event for event in all_events}
     quotes = tuple(
-        quote
-        for quote in latest_quotes
-        if quote.outcome.market.event_id in all_event_map
+        quote for quote in latest_quotes if quote.outcome.market.event_id in all_event_map
     )
     fresh_quotes = tuple(
-        quote
-        for quote in quotes
-        if is_fresh(quote, as_of=as_of, max_age=controls["freshness"])
+        quote for quote in quotes if is_fresh(quote, as_of=as_of, max_age=controls["freshness"])
     )
     events = all_events
     event_map, _ = _event_maps(events)
@@ -4324,13 +4281,16 @@ def run() -> None:
     )
     default_view = saved_view if saved_view in tab_names else "Best Bets"
     with st.container(key="dashboard_nav"):
-        active_view = st.segmented_control(
-            "Dashboard section",
-            tab_names,
-            default=default_view,
-            key="primary_dashboard_view",
-            label_visibility="collapsed",
-        ) or "Best Bets"
+        active_view = (
+            st.segmented_control(
+                "Dashboard section",
+                tab_names,
+                default=default_view,
+                key="primary_dashboard_view",
+                label_visibility="collapsed",
+            )
+            or "Best Bets"
+        )
 
     if active_view == "Best Bets":
         ev_filters = _render_ev_filter_bar(

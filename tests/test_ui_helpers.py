@@ -101,9 +101,7 @@ def test_games_page_prices_are_clickable_and_best_price_is_highlighted(now):
     event = snapshot.events[0]
     event_url = "https://sports.betway.com/en/sports/event/example"
     event_quotes = tuple(
-        replace(quote, source_url=event_url)
-        if quote.sportsbook.name == "Betway"
-        else quote
+        replace(quote, source_url=event_url) if quote.sportsbook.name == "Betway" else quote
         for quote in snapshot.quotes
         if quote.outcome.market.event_id == event.id
     )
@@ -131,6 +129,16 @@ def test_games_page_prices_are_clickable_and_best_price_is_highlighted(now):
     assert '<details class="games-event">' in event_markup
     assert '<details class="games-event" open>' not in event_markup
     assert event.name in event_markup
+
+
+def test_games_page_keeps_scheduled_events_before_odds_are_posted(now):
+    snapshot = generate_demo_snapshots(now)[-1]
+    event = snapshot.events[0]
+
+    markup = _game_event_markup(event, (), ["PlayNow", "Betway"], "American")
+
+    assert "Odds not available yet" in markup
+    assert event.name in markup
 
 
 def test_owner_password_uses_a_sha256_digest():
@@ -206,9 +214,7 @@ def test_bet_now_prefers_a_verified_event_deep_link(now):
 def test_player_prop_labels_name_the_player_stat_and_line(now):
     snapshot = generate_demo_snapshots(now)[-1]
     quote = next(
-        item
-        for item in snapshot.quotes
-        if item.outcome.market.kind.value == "player_prop"
+        item for item in snapshot.quotes if item.outcome.market.kind.value == "player_prop"
     )
 
     assert _market_label(quote.outcome.market) == "Passing yards"
@@ -318,9 +324,7 @@ def test_other_ev_excludes_recommendations_without_dropping_other_markets(now):
     recommended = _recommended_value_opportunities(all_filtered, events, as_of=now)
     other = _exclude_recommended_opportunities(all_filtered, recommended)
 
-    recommended_keys = {
-        (item.quote.sportsbook.id, item.quote.outcome.id) for item in recommended
-    }
+    recommended_keys = {(item.quote.sportsbook.id, item.quote.outcome.id) for item in recommended}
     other_keys = {(item.quote.sportsbook.id, item.quote.outcome.id) for item in other}
     assert recommended_keys.isdisjoint(other_keys)
     assert len(other) + len(recommended) == len(all_filtered)
@@ -365,8 +369,7 @@ def test_recommended_bets_clear_the_product_criteria(now):
     assert len(recommended) == 3
     assert all(item.expected_value >= RECOMMENDED_MINIMUM_EV for item in recommended)
     assert all(
-        implied_probability(item.quote.decimal_odds)
-        >= RECOMMENDED_MINIMUM_IMPLIED_PROBABILITY
+        implied_probability(item.quote.decimal_odds) >= RECOMMENDED_MINIMUM_IMPLIED_PROBABILITY
         for item in recommended
     )
     assert all(
@@ -375,14 +378,8 @@ def test_recommended_bets_clear_the_product_criteria(now):
         <= RECOMMENDED_MAXIMUM_AMERICAN_ODDS
         for item in recommended
     )
-    assert all(
-        item.reference_books >= RECOMMENDED_MINIMUM_REFERENCE_BOOKS
-        for item in recommended
-    )
-    assert all(
-        events[item.quote.outcome.market.event_id].start_time > now
-        for item in recommended
-    )
+    assert all(item.reference_books >= RECOMMENDED_MINIMUM_REFERENCE_BOOKS for item in recommended)
+    assert all(events[item.quote.outcome.market.event_id].start_time > now for item in recommended)
 
 
 def test_expanded_comparison_shows_line_shopping_without_repeating_summary(now):

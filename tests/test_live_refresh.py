@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from odds_scanner.live_refresh import (
     DEFAULT_LEAGUE_KEYS,
@@ -8,6 +8,7 @@ from odds_scanner.live_refresh import (
     estimated_request_count,
     record_requests,
     requests_used_this_month,
+    schedule_refresh_due,
 )
 from odds_scanner.providers.oddspapi import OddsPapiProvider
 from odds_scanner.storage.sqlite import SQLiteQuoteRepository
@@ -50,6 +51,22 @@ def test_estimated_request_count_includes_only_missing_discovery() -> None:
 
     assert estimated_request_count(cold, leagues) == 5
     assert estimated_request_count(warm, leagues) == 2
+    warm.include_schedule = True
+    assert estimated_request_count(warm, leagues) == 4
+
+
+def test_schedule_catalog_refreshes_weekly() -> None:
+    now = datetime(2026, 8, 15, tzinfo=UTC)
+
+    assert schedule_refresh_due({}, as_of=now)
+    assert not schedule_refresh_due(
+        {"oddspapi_schedule_refreshed_at": (now - timedelta(days=2)).isoformat()},
+        as_of=now,
+    )
+    assert schedule_refresh_due(
+        {"oddspapi_schedule_refreshed_at": (now - timedelta(days=8)).isoformat()},
+        as_of=now,
+    )
 
 
 def test_monthly_usage_resets_without_erasing_prior_month(tmp_path) -> None:

@@ -224,6 +224,7 @@ class OddsPapiProvider:
         "betrivers",
     )
     include_all_bookmakers: bool = False
+    include_schedule: bool = False
     bookmaker_cooldown_seconds: float = 1.6
     timeout_seconds: float = 30.0
     base_url: str = "https://api.oddspapi.io/v4"
@@ -270,6 +271,17 @@ class OddsPapiProvider:
             "oddsFormat": "decimal",
         }
         raw_events: list[Mapping[str, Any]] = []
+        if self.include_schedule:
+            for tournament_id in tournament_ids:
+                payload = self._request(
+                    "fixtures",
+                    {
+                        "tournamentId": tournament_id,
+                        "statusId": 0,
+                        "language": "en",
+                    },
+                )
+                raw_events.extend(self._event_list(payload))
         if self.include_all_bookmakers:
             payload = self._request("odds-by-tournaments", odds_params)
             raw_events.extend(self._event_list(payload))
@@ -435,18 +447,9 @@ class OddsPapiProvider:
             )
             fixture_path = raw_book_value.get("fixturePath")
             source_url = str(fixture_path).strip() if fixture_path else None
-            bookmaker_fixture_id = str(
-                raw_book_value.get("bookmakerFixtureId") or ""
-            ).strip()
-            if (
-                not source_url
-                and book_slug.lower() == "playnow"
-                and bookmaker_fixture_id.isdigit()
-            ):
-                source_url = (
-                    "https://www.playnow.com/sports/sports/event/"
-                    f"{bookmaker_fixture_id}"
-                )
+            bookmaker_fixture_id = str(raw_book_value.get("bookmakerFixtureId") or "").strip()
+            if not source_url and book_slug.lower() == "playnow" and bookmaker_fixture_id.isdigit():
+                source_url = f"https://www.playnow.com/sports/sports/event/{bookmaker_fixture_id}"
             if (
                 not source_url
                 and book_slug.lower() == "playnow"
@@ -534,9 +537,7 @@ class OddsPapiProvider:
                         except (NormalizationError, ValueError):
                             continue
                         betslip_value = raw_price_value.get("betslip")
-                        betslip_url = (
-                            str(betslip_value).strip() if betslip_value else None
-                        )
+                        betslip_url = str(betslip_value).strip() if betslip_value else None
                         result.append(
                             Quote(
                                 provider_id=self.provider_id,

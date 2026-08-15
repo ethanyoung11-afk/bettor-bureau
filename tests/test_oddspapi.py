@@ -144,9 +144,7 @@ def test_oddspapi_normalizes_all_books_and_featured_markets() -> None:
     assert isinstance(betway_outcomes, dict)
     home_players = betway_outcomes["2011"]["players"]
     assert isinstance(home_players, dict)
-    home_players["0"]["betslip"] = (
-        "https://betway.com/g/en/sports/betslip/new-england-moneyline"
-    )
+    home_players["0"]["betslip"] = "https://betway.com/g/en/sports/betslip/new-england-moneyline"
     event = {
         "fixtureId": "fixture-1",
         "tournamentId": 900,
@@ -194,9 +192,7 @@ def test_oddspapi_normalizes_all_books_and_featured_markets() -> None:
     assert {
         quote.source_url for quote in snapshot.quotes if quote.sportsbook.name == "PlayNow"
     } == {"https://www.playnow.com/sports/sports/event/12025970"}
-    assert {
-        quote.source_url for quote in snapshot.quotes if quote.sportsbook.name == "Betway"
-    } == {
+    assert {quote.source_url for quote in snapshot.quotes if quote.sportsbook.name == "Betway"} == {
         "https://betway.com/g/en/sports/betslip/new-england-moneyline",
         "https://betway.com/g/en/sports/event/fixture-1",
     }
@@ -347,9 +343,7 @@ def test_oddspapi_normalizes_player_props_without_extra_requests() -> None:
     snapshot = provider.fetch_snapshot(["americanfootball_cfl"], ["player_props"])
 
     assert len(snapshot.quotes) == 4
-    assert {quote.outcome.market.kind for quote in snapshot.quotes} == {
-        MarketKind.PLAYER_PROP
-    }
+    assert {quote.outcome.market.kind for quote in snapshot.quotes} == {MarketKind.PLAYER_PROP}
     market = snapshot.quotes[0].outcome.market
     assert market.variant == "Nathan Rourke"
     assert market.stat_key == "Passing yards"
@@ -366,6 +360,60 @@ def test_oddspapi_timestamps_are_aware() -> None:
     parsed = datetime.fromisoformat("2026-08-13T20:00:00+00:00")
     assert parsed.tzinfo is UTC
     assert provider.provider_id == "oddspapi"
+
+
+def test_oddspapi_can_merge_unpriced_schedule_with_priced_events() -> None:
+    scheduled = {
+        "fixtureId": "fixture-2",
+        "tournamentId": 900,
+        "participant1Name": "Ottawa Redblacks",
+        "participant2Name": "Montreal Alouettes",
+        "startTime": "2026-08-21T00:30:00Z",
+        "updatedAt": "2026-08-13T20:00:00Z",
+        "bookmakerOdds": {},
+    }
+    priced = {
+        "fixtureId": "fixture-1",
+        "tournamentId": 900,
+        "participant1Name": "BC Lions",
+        "participant2Name": "Calgary Stampeders",
+        "startTime": "2026-08-16T02:00:00Z",
+        "updatedAt": "2026-08-13T20:00:00Z",
+        "bookmakerOdds": {
+            "playnow": {
+                "bookmakerIsActive": True,
+                "markets": {"201": _market((2011, 2012), ("1.91", "1.95"))},
+            }
+        },
+    }
+    session = StubSession(
+        {
+            "fixtures": [scheduled, {**priced, "bookmakerOdds": {}}],
+            "odds-by-tournaments": [priced],
+        }
+    )
+    provider = OddsPapiProvider(
+        api_key="test",
+        bookmaker_slugs=("playnow",),
+        include_schedule=True,
+        bookmaker_cooldown_seconds=0,
+        tournament_ids={"americanfootball_cfl": 900},
+        market_catalog={str(item["marketId"]): item for item in _catalog()},
+        session=session,  # type: ignore[arg-type]
+    )
+
+    snapshot = provider.fetch_snapshot(["americanfootball_cfl"], ["h2h"])
+
+    assert len(snapshot.events) == 2
+    assert len(snapshot.quotes) == 2
+    assert {event.name for event in snapshot.events} == {
+        "Calgary Stampeders at BC Lions",
+        "Montreal Alouettes at Ottawa Redblacks",
+    }
+    assert [call[0] for call in session.calls] == [
+        "fixtures",
+        "odds-by-tournaments",
+    ]
 
 
 def test_market_classifier_rejects_partial_and_team_totals() -> None:

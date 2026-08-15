@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -31,6 +31,7 @@ DEFAULT_MONTHLY_CREDIT_LIMIT = 250
 DEFAULT_MONTHLY_CREDIT_RESERVE = 25
 DEFAULT_LEAGUE_KEYS = tuple(FOOTBALL_LEAGUES)
 DEFAULT_MARKET_KEYS = ("h2h", "spreads", "totals", "player_props")
+SCHEDULE_REFRESH_INTERVAL = timedelta(days=7)
 MARKET_KINDS = {
     "h2h": MarketKind.MONEYLINE,
     "spreads": MarketKind.SPREAD,
@@ -105,6 +106,21 @@ def requests_used_this_month(
         return 0
 
 
+def schedule_refresh_due(
+    settings: dict[str, str],
+    *,
+    as_of: datetime | None = None,
+) -> bool:
+    current = as_of or datetime.now(UTC)
+    try:
+        refreshed_at = datetime.fromisoformat(settings.get("oddspapi_schedule_refreshed_at", ""))
+        if refreshed_at.tzinfo is None or refreshed_at.utcoffset() is None:
+            return True
+    except ValueError:
+        return True
+    return current - refreshed_at.astimezone(UTC) >= SCHEDULE_REFRESH_INTERVAL
+
+
 def record_requests(
     repository: QuoteRepository,
     request_count: int,
@@ -123,9 +139,7 @@ def estimated_request_count(
     league_keys: tuple[str, ...],
 ) -> int:
     missing_sports = {
-        ODDSPAPI_SPORT_IDS[key]
-        for key in league_keys
-        if key not in provider.tournament_ids
+        ODDSPAPI_SPORT_IDS[key] for key in league_keys if key not in provider.tournament_ids
     }
     cached_market_sports = {
         int(raw.get("sportId", -1))
@@ -141,7 +155,8 @@ def estimated_request_count(
         if provider.include_all_bookmakers
         else len(tuple(dict.fromkeys(provider.bookmaker_slugs)))
     )
-    return discovery_requests + odds_requests
+    schedule_requests = len(league_keys) if provider.include_schedule else 0
+    return discovery_requests + schedule_requests + odds_requests
 
 
 def build_refresh_request(
@@ -180,6 +195,7 @@ def main() -> int:
     provider = OddsPapiProvider(
         api_key=api_key,
         include_all_bookmakers=False,
+        include_schedule=schedule_refresh_due(settings),
         tournament_ids={
             **stored_tournaments,
             **ODDSPAPI_PRIMARY_TOURNAMENT_IDS,
@@ -192,9 +208,7 @@ def main() -> int:
         event_url_resolver=PlayNowEventResolver().resolve,
     )
 
-    credit_limit = _integer_setting(
-        "ODDSPAPI_MONTHLY_CREDIT_LIMIT", DEFAULT_MONTHLY_CREDIT_LIMIT
-    )
+    credit_limit = _integer_setting("ODDSPAPI_MONTHLY_CREDIT_LIMIT", DEFAULT_MONTHLY_CREDIT_LIMIT)
     credit_reserve = _integer_setting(
         "ODDSPAPI_MONTHLY_CREDIT_RESERVE", DEFAULT_MONTHLY_CREDIT_RESERVE
     )
@@ -231,6 +245,11 @@ def main() -> int:
         "oddspapi_market_catalog",
         json.dumps(provider.market_catalog, separators=(",", ":")),
     )
+    if provider.include_schedule and diagnostics.status is RefreshResultStatus.SUCCESS:
+        repository.save_setting(
+            "oddspapi_schedule_refreshed_at",
+            diagnostics.finished_at.isoformat(),
+        )
     used_after = record_requests(repository, provider.request_count)
     print(
         f"{diagnostics.status.value}: {diagnostics.events_checked} events, "
