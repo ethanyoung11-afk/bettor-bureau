@@ -118,6 +118,7 @@ SPORTSBOOK_DOMAINS = {
     "Pinnacle": ("pinnacle.com",),
 }
 ODDSPAPI_FREE_CREDITS = 250
+MAX_TRUSTED_QUOTE_AGE = timedelta(minutes=30)
 EV_INITIAL_BATCH_SIZE = 10
 EV_BATCH_SIZE = 10
 ODDSPAPI_BOOK_SLUGS = {
@@ -408,6 +409,8 @@ def _invalidate_view_snapshot(provider_id: str) -> None:
 def _value_opportunities_for_books(
     quotes: tuple[Quote, ...],
     sportsbook_names: tuple[str, ...],
+    *,
+    max_age: timedelta = MAX_TRUSTED_QUOTE_AGE,
 ) -> tuple[ValueOpportunity, ...]:
     """Reuse consensus analysis while users move between views and unchanged filters."""
     latest_observation = max(
@@ -418,6 +421,7 @@ def _value_opportunities_for_books(
         len(quotes),
         latest_observation,
         tuple(sorted(sportsbook_names)),
+        max_age,
     )
     cache = st.session_state.setdefault("value_opportunity_cache", {})
     if isinstance(cache, dict):
@@ -430,10 +434,10 @@ def _value_opportunities_for_books(
 
     audit = audit_consensus_value(
         quotes,
-        as_of=latest_observation,
-        max_age=timedelta(0),
+        as_of=datetime.now(UTC),
+        max_age=max_age,
         candidate_sportsbooks=sportsbook_names,
-        include_stale=True,
+        include_stale=False,
     )
     values = opportunities_from_value_audit(audit, minimum_ev=Decimal("0"))
     if len(cache) >= 8:
@@ -1136,6 +1140,10 @@ def _inject_theme() -> None:
         .games-price-link.best {
             color:#43df88 !important; background:#0a3322; font-weight:850;
         }
+        .games-price-link.stale {
+            color:#8c98a8 !important; background:#141923; cursor:not-allowed;
+            font-size:.74rem;
+        }
         .games-unavailable { color:#5e6d80; }
         .games-empty {
             padding:2.2rem 1rem; border:1px dashed #2b3b4f; border-radius:8px;
@@ -1807,8 +1815,8 @@ def _age_label(quote: Quote, as_of: datetime) -> str:
 
 def _recommendation_freshness(quote: Quote, as_of: datetime) -> str:
     config = _refresh_config(str(st.session_state.get("data_source", "Demo"))).freshness
-    state = freshness_state(quote.observed_at, as_of=as_of, config=config)
-    seconds = max(0, int((as_of - quote.observed_at).total_seconds()))
+    state = freshness_state(quote.source_updated_at, as_of=as_of, config=config)
+    seconds = max(0, int((as_of - quote.source_updated_at).total_seconds()))
     checked_age = f"{seconds}s" if seconds < 60 else f"{seconds // 60}m"
     return f"{state.value} · checked {checked_age} ago"
 
@@ -2303,7 +2311,13 @@ def _game_market_sections_markup(
     sportsbook_names: list[str],
     odds_format: str,
     event: Event,
+    *,
+    as_of: datetime | None = None,
 ) -> str:
+    effective_as_of = as_of or max(
+        (quote.observed_at for quote in event_quotes),
+        default=datetime.now(UTC),
+    )
     kind_order = (
         MarketKind.MONEYLINE,
         MarketKind.SPREAD,
@@ -2334,7 +2348,15 @@ def _game_market_sections_markup(
             representative = next(iter(book_quotes.values()))
             selection = _selection_label(representative, event)
             market_label = _market_label(representative.outcome.market)
-            best_price = max(quote.decimal_odds for quote in book_quotes.values())
+            trusted_quotes = tuple(
+                quote
+                for quote in book_quotes.values()
+                if is_fresh(quote, as_of=effective_as_of, max_age=MAX_TRUSTED_QUOTE_AGE)
+            )
+            best_price = max(
+                (quote.decimal_odds for quote in trusted_quotes),
+                default=None,
+            )
             cells: list[str] = []
             for sportsbook in sportsbook_names:
                 book_quote = book_quotes.get(sportsbook)
@@ -2342,6 +2364,20 @@ def _game_market_sections_markup(
                     cells.append('<td class="games-price-cell games-unavailable">—</td>')
                     continue
                 displayed_price = format_odds(book_quote.decimal_odds, odds_format)
+                trusted = is_fresh(
+                    book_quote,
+                    as_of=effective_as_of,
+                    max_age=MAX_TRUSTED_QUOTE_AGE,
+                )
+                if not trusted:
+                    age = _age_label(book_quote, effective_as_of)
+                    cells.append(
+                        '<td class="games-price-cell">'
+                        '<span class="games-price-link stale" '
+                        f'title="Provider price is {html.escape(age)} old and may have changed">'
+                        f"{displayed_price} · stale</span></td>"
+                    )
+                    continue
                 is_best = book_quote.decimal_odds == best_price
                 sportsbook_url = _sportsbook_event_url(book_quote) or _sportsbook_bet_url(
                     book_quote
@@ -2393,6 +2429,8 @@ def _game_event_markup(
     event_quotes: tuple[Quote, ...],
     sportsbook_names: list[str],
     odds_format: str,
+    *,
+    as_of: datetime | None = None,
 ) -> str:
     local_start = event.start_time.astimezone(DISPLAY_TIMEZONE)
     time_label = local_start.strftime("%I:%M %p").lstrip("0")
@@ -2404,6 +2442,7 @@ def _game_event_markup(
         sportsbook_names,
         odds_format,
         event,
+        as_of=as_of,
     )
     if not market_markup:
         market_markup = (
@@ -2435,6 +2474,7 @@ def _render_event_board(
     *,
     is_admin: bool = False,
 ) -> None:
+    board_as_of = datetime.now(UTC)
     available_events = sorted(
         events,
         key=lambda event: (event.start_time, event.name),
@@ -2612,6 +2652,7 @@ def _render_event_board(
                 quotes_by_event[event.id],
                 sportsbook_names,
                 odds_format,
+                as_of=board_as_of,
             )
             for event in day_events
         )
@@ -3941,6 +3982,7 @@ def _value_comparison_markup(
         edge_class = "positive" if book_edge > 0 else "negative"
         event_url = _sportsbook_event_url(quote)
         url = event_url or _sportsbook_bet_url(quote)
+        trusted = is_fresh(quote, as_of=as_of, max_age=MAX_TRUSTED_QUOTE_AGE)
         action = (
             f'<a class="ev-price-action" href="{html.escape(url, quote=True)}" '
             f'target="_blank" rel="noopener noreferrer">'
@@ -3948,6 +3990,8 @@ def _value_comparison_markup(
             if url
             else '<span class="ev-price-action">Unavailable</span>'
         )
+        if not trusted:
+            action = '<span class="ev-price-action">Stale</span>'
         price_rows.append(
             f'<div class="ev-price-row ev-price-grid{" best" if is_best else ""}">'
             f'<span class="ev-price-book">{html.escape(book)}</span>'
@@ -4467,7 +4511,11 @@ def _render_primary_dashboard(
             quotes,
             as_of,
         )
-        market_values = _value_opportunities_for_books(quotes, ev_filters.my_books)
+        market_values = _value_opportunities_for_books(
+            quotes,
+            ev_filters.my_books,
+            max_age=MAX_TRUSTED_QUOTE_AGE,
+        )
         all_filtered_values = _filter_value_opportunities(
             market_values,
             event_map,

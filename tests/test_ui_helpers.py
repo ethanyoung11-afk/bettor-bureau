@@ -39,6 +39,7 @@ from odds_scanner.ui import (
     _sportsbook_event_url,
     _sportsbook_preferences_storage_key,
     _value_comparison_markup,
+    _value_opportunities_for_books,
 )
 
 
@@ -167,6 +168,49 @@ def test_games_page_keeps_scheduled_events_before_odds_are_posted(now):
 
     assert "Odds not available yet" in markup
     assert event.name in markup
+
+
+def test_stale_sportsbook_prices_remain_visible_but_are_not_clickable(now):
+    snapshot = generate_demo_snapshots(now)[-1]
+    event = snapshot.events[0]
+    event_url = "https://sports.betway.com/en/sports/event/example"
+    stale_quotes = tuple(
+        replace(
+            quote,
+            source_updated_at=now - timedelta(days=1),
+            observed_at=now,
+            source_url=event_url,
+        )
+        for quote in snapshot.quotes
+        if quote.outcome.market.event_id == event.id
+    )
+
+    markup = _game_market_sections_markup(
+        stale_quotes,
+        ["PlayNow", "Betway", "Pinnacle"],
+        "American",
+        event,
+        as_of=now,
+    )
+
+    assert "stale" in markup
+    assert event_url not in markup
+
+
+def test_stale_provider_prices_cannot_create_value_bets(now):
+    snapshot = generate_demo_snapshots(now)[-1]
+    stale_quotes = tuple(
+        replace(quote, source_updated_at=now - timedelta(days=1), observed_at=now)
+        for quote in snapshot.quotes
+    )
+
+    values = _value_opportunities_for_books(
+        stale_quotes,
+        tuple({quote.sportsbook.name for quote in stale_quotes}),
+        max_age=timedelta(minutes=30),
+    )
+
+    assert values == ()
 
 
 def test_owner_password_uses_a_sha256_digest():

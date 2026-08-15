@@ -91,6 +91,24 @@ def _friendly_book_name(slug: str) -> str:
     return " ".join(part.capitalize() for part in slug.replace("_", "-").split("-") if part)
 
 
+def _source_update_time(
+    raw_event: Mapping[str, Any],
+    raw_book: Mapping[str, Any],
+    raw_price: Mapping[str, Any],
+    fetched_at: datetime,
+) -> datetime:
+    """Keep the provider's real data age instead of treating retrieval as a price update."""
+    for record in (raw_price, raw_book, raw_event):
+        candidates: list[datetime] = []
+        for field_name in ("updatedAt", "changedAt", "lastUpdatedAt"):
+            raw_value = record.get(field_name)
+            if raw_value:
+                candidates.append(parse_timestamp(raw_value, fetched_at))
+        if candidates:
+            return max(candidates)
+    return fetched_at
+
+
 def _league_key(tournament_name: str) -> str | None:
     token = canonical_token(tournament_name)
     if (
@@ -559,10 +577,15 @@ class OddsPapiProvider:
                                 sportsbook=sportsbook,
                                 outcome=outcome,
                                 decimal_odds=price,
-                                # An active snapshot verifies that this price is currently offered.
-                                # OddsPapi's changedAt is the last price movement, which can be old
-                                # even when a still-current line was just fetched.
-                                source_updated_at=fetched_at,
+                                # OddsPapi can keep an old price marked active after the sportsbook
+                                # has moved. Preserve the provider timestamp so the UI can
+                                # quarantine stale quotes instead of presenting them as fresh.
+                                source_updated_at=_source_update_time(
+                                    raw,
+                                    raw_book_value,
+                                    raw_price_value,
+                                    fetched_at,
+                                ),
                                 observed_at=fetched_at,
                                 source_event_id=source_event_id,
                                 # A provider-supplied betslip URL is selection-specific. When it

@@ -213,6 +213,9 @@ def test_oddspapi_normalizes_all_books_and_featured_markets() -> None:
     assert snapshot.provider_id == "oddspapi"
     assert len(snapshot.events) == 1
     assert len(snapshot.quotes) == 8
+    assert {quote.source_updated_at for quote in snapshot.quotes} == {
+        datetime(2026, 8, 13, 20, 0, tzinfo=UTC)
+    }
     assert {quote.sportsbook.name for quote in snapshot.quotes} == {"PlayNow", "Betway"}
     assert {
         quote.source_url for quote in snapshot.quotes if quote.sportsbook.name == "PlayNow"
