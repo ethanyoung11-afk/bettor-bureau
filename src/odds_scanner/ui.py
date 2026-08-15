@@ -4328,7 +4328,7 @@ def run() -> None:
     event_map, _ = _event_maps(events)
     _render_odds_status(quotes, fresh_quotes, as_of, container=header_odds_status)
 
-    tab_names = ["Best Bets", "Games"]
+    tab_names = ["Best Bets", "Games", "Results"]
     saved_view = str(
         st.session_state.get(
             "primary_dashboard_view",
@@ -4399,8 +4399,7 @@ def run() -> None:
                 is RefreshResultStatus.SUCCESS
             ),
         )
-        _render_official_performance(repository, controls["odds_format"])
-    else:
+    elif active_view == "Games":
         comparison_books = sorted(
             {quote.sportsbook.name for quote in quotes},
             key=_book_sort_key,
@@ -4413,6 +4412,8 @@ def run() -> None:
             repository,
             is_admin=is_admin,
         )
+    else:
+        _render_official_performance(repository, controls["odds_format"])
 
     _render_launch_disclosures(str(controls["mode"]))
     _render_owner_panel(
