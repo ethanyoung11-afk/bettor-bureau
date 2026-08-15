@@ -17,8 +17,10 @@ from odds_scanner.ui import (
     STARTER_BOOKS,
     EVFilterState,
     _best_value_by_outcome,
+    _board_header_markup,
     _decode_sportsbook_preferences,
     _event_odds_frame,
+    _event_team_names,
     _filter_value_opportunities,
     _game_event_markup,
     _game_market_sections_markup,
@@ -27,10 +29,22 @@ from odds_scanner.ui import (
     _password_matches,
     _recommended_value_opportunities,
     _selection_label,
+    _sort_more_ev_values,
     _sportsbook_bet_url,
+    _sportsbook_default_enabled,
     _sportsbook_event_url,
     _value_comparison_markup,
+    _without_recommendation_probability_screen,
 )
+
+
+def test_board_tooltips_are_exclusive_and_default_books_are_target_books():
+    header = _board_header_markup()
+
+    assert header.count('name="board-tooltip"') == 4
+    assert _sportsbook_default_enabled("PlayNow")
+    assert _sportsbook_default_enabled("Betway")
+    assert not _sportsbook_default_enabled("Pinnacle")
 
 
 def test_event_odds_frame_keeps_book_columns_and_marks_best_prices(now):
@@ -79,7 +93,6 @@ def test_games_page_prices_are_clickable_and_best_price_is_highlighted(now):
         event_quotes,
         sportsbooks,
         "American",
-        expanded=True,
     )
 
     assert f'href="{event_url}"' in markets
@@ -88,7 +101,8 @@ def test_games_page_prices_are_clickable_and_best_price_is_highlighted(now):
     assert "Moneyline" in markets
     assert all(f"<th>{sportsbook}</th>" in markets for sportsbook in sportsbooks)
     assert "Available to you" not in markets
-    assert '<details class="games-event" open>' in event_markup
+    assert '<details class="games-event">' in event_markup
+    assert '<details class="games-event" open>' not in event_markup
     assert event.name in event_markup
 
 
@@ -111,6 +125,22 @@ def test_selection_label_uses_the_team_name_when_event_is_available(now):
     )
 
     assert _selection_label(quote, event) in {event.home.name, event.away.name}
+
+
+def test_team_names_fall_back_to_the_event_title_for_generic_feed_participants(now):
+    snapshot = generate_demo_snapshots(now)[-1]
+    event = snapshot.events[0]
+    generic_event = replace(
+        event,
+        home=replace(event.home, name="Home"),
+        away=replace(event.away, name="Away"),
+        name="Missouri Tigers at Kansas Jayhawks",
+    )
+
+    assert _event_team_names(generic_event) == (
+        "Kansas Jayhawks",
+        "Missouri Tigers",
+    )
 
 
 def test_every_available_book_has_a_bet_now_destination():
@@ -199,6 +229,54 @@ def test_ev_board_keeps_one_best_offer_per_bet_and_filters_implied_probability(n
         sorted((item.expected_value for item in filtered), reverse=True)
     )
     assert len(_best_value_by_outcome(values)) <= len(values)
+
+
+def test_more_ev_keeps_shared_filters_but_does_not_hide_longshots(now):
+    filters = EVFilterState(
+        league_id="nfl",
+        market_kind=None,
+        minimum_ev=Decimal("0.02"),
+        my_books=("PlayNow", "Betway"),
+        minimum_implied_probability=Decimal("0.30"),
+        minimum_american_odds=-200,
+        maximum_american_odds=300,
+        minimum_consensus_books=4,
+        starts_before=now + timedelta(days=2),
+        fresh_only=True,
+        sort_by="EV % (High to Low)",
+    )
+
+    more_filters = _without_recommendation_probability_screen(filters)
+
+    assert more_filters.minimum_implied_probability == 0
+    assert more_filters.minimum_american_odds is None
+    assert more_filters.maximum_american_odds is None
+    assert more_filters.league_id == filters.league_id
+    assert more_filters.minimum_ev == filters.minimum_ev
+    assert more_filters.my_books == filters.my_books
+    assert more_filters.minimum_consensus_books == filters.minimum_consensus_books
+
+
+def test_more_ev_has_its_own_sorting(now):
+    snapshots = generate_demo_snapshots(now)
+    quotes = deduplicate_quotes(quote for snapshot in snapshots for quote in snapshot.quotes)
+    values = detect_consensus_value(
+        quotes,
+        as_of=now,
+        max_age=timedelta(minutes=5),
+        minimum_ev=Decimal("0"),
+    )
+    events = {event.id: event for event in snapshots[-1].events}
+
+    by_probability = _sort_more_ev_values(values, events, "Win Probability")
+    by_odds = _sort_more_ev_values(values, events, "Best Odds")
+
+    assert tuple(item.fair_probability for item in by_probability) == tuple(
+        sorted((item.fair_probability for item in values), reverse=True)
+    )
+    assert tuple(item.quote.decimal_odds for item in by_odds) == tuple(
+        sorted((item.quote.decimal_odds for item in values), reverse=True)
+    )
 
 
 def test_recommended_bets_clear_the_product_criteria(now):

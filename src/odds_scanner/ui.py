@@ -6,7 +6,7 @@ import hmac
 import html
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from functools import lru_cache
@@ -810,24 +810,24 @@ def _inject_theme() -> None:
         .ev-details { padding:.65rem .9rem .8rem; background:#08111b; }
         .ev-price-heading {
             display:flex; align-items:center; justify-content:space-between; gap:12px;
-            color:#eef3f8; font-size:.78rem; font-weight:800; margin-bottom:.55rem;
+            color:#eef3f8; font-size:.88rem; font-weight:800; margin-bottom:.6rem;
         }
-        .ev-price-heading small { color:#8f9daf; font-size:.63rem; font-weight:600; }
+        .ev-price-heading small { color:#9eabbc; font-size:.72rem; font-weight:600; }
         .ev-price-grid {
             display:grid; grid-template-columns:minmax(145px,1.35fr) 92px 112px 102px 86px 82px;
             align-items:center; column-gap:12px;
         }
         .ev-price-header {
-            color:#7f8ea2; font-size:.58rem; text-transform:uppercase; letter-spacing:.05em;
+            color:#93a1b4; font-size:.67rem; text-transform:uppercase; letter-spacing:.05em;
             padding:0 .55rem .4rem;
         }
         .ev-price-row {
-            color:#d8e0e8; font-size:.69rem; padding:.46rem .55rem;
+            color:#d8e0e8; font-size:.78rem; padding:.54rem .6rem;
             border-top:1px solid #1c2b3b;
         }
         .ev-price-row.best { background:rgba(21,128,71,.08); }
         .ev-price-book { color:#eef3f8; font-weight:750; }
-        .ev-price-odds { color:#dfe6ee; font-size:.79rem; font-weight:800; }
+        .ev-price-odds { color:#dfe6ee; font-size:.88rem; font-weight:800; }
         .ev-price-row.best .ev-price-odds { color:#39df83; }
         .ev-price-edge.positive { color:#39df83; font-weight:750; }
         .ev-price-edge.negative { color:#9ba8b7; }
@@ -838,9 +838,9 @@ def _inject_theme() -> None:
         .ev-price-action {
             display:inline-flex; justify-content:center; padding:4px 8px; border:1px solid #1a874d;
             border-radius:5px; color:#39df83 !important; text-decoration:none !important;
-            font-size:.64rem; font-weight:800;
+            font-size:.74rem; font-weight:800;
         }
-        .ev-consensus-details { color:#8492a5; font-size:.61rem; margin-top:.45rem; }
+        .ev-consensus-details { color:#95a2b4; font-size:.71rem; margin-top:.55rem; }
         .ev-consensus-details summary {
             width:max-content; cursor:pointer; color:#91a0b3; list-style:none;
         }
@@ -853,15 +853,15 @@ def _inject_theme() -> None:
         }
         .ev-empty strong { display:block; color:#eef2f7; font-size:1.05rem; margin-bottom:.35rem; }
         .legal-details a { color:#55e79a !important; text-decoration:none; }
-        .legal-details { color:#9eabba; font-size:.76rem; line-height:1.55; }
+        .legal-details { color:#aab5c4; font-size:.86rem; line-height:1.62; }
         .legal-details strong { color:#e7edf4; }
         .games-heading {
             display:flex; align-items:flex-end; justify-content:space-between; gap:16px;
             margin:.45rem 0 .7rem;
         }
         .games-heading h2 { margin:0; color:#f3f6fa; font-size:1.45rem; }
-        .games-heading p { margin:3px 0 0; color:#96a4b6; font-size:.78rem; }
-        .games-heading span { color:#96a4b6; font-size:.75rem; white-space:nowrap; }
+        .games-heading p { margin:4px 0 0; color:#a7b3c2; font-size:.88rem; }
+        .games-heading span { color:#a7b3c2; font-size:.84rem; white-space:nowrap; }
         .st-key-games_filters { margin-bottom:.65rem; }
         .st-key-games_filters [data-testid="stHorizontalBlock"] { gap:8px; }
         .st-key-games_filters [data-baseweb="input"],
@@ -873,8 +873,8 @@ def _inject_theme() -> None:
             display:flex; align-items:center; justify-content:space-between;
             margin:1rem .2rem .4rem; color:#f1f5f9;
         }
-        .games-day-heading strong { font-size:1rem; }
-        .games-day-heading span { color:#8f9daf; font-size:.7rem; }
+        .games-day-heading strong { font-size:1.08rem; }
+        .games-day-heading span { color:#9eabbc; font-size:.8rem; }
         .games-list {
             border:1px solid #25364a; border-radius:8px; overflow:hidden;
             background:#08131f;
@@ -882,13 +882,13 @@ def _inject_theme() -> None:
         .games-event + .games-event { border-top:1px solid #223247; }
         .games-event > summary {
             display:grid; grid-template-columns:86px minmax(300px,1fr) 24px;
-            align-items:center; gap:14px; min-height:72px; padding:.75rem .9rem;
+            align-items:center; gap:14px; min-height:78px; padding:.82rem .95rem;
             cursor:pointer; list-style:none; transition:background .14s ease;
         }
         .games-event > summary::-webkit-details-marker { display:none; }
         .games-event > summary:hover,.games-event[open] > summary { background:#0c1927; }
         .games-event[open] > summary { border-bottom:1px solid #25364a; }
-        .games-time { color:#a5b0bf; font-size:.78rem; white-space:nowrap; }
+        .games-time { color:#b3bdca; font-size:.87rem; white-space:nowrap; }
         .games-matchup { display:flex; align-items:center; min-width:0; gap:12px; }
         .games-team-logos {
             display:flex; align-items:center; gap:6px; width:86px; flex:0 0 86px;
@@ -896,11 +896,11 @@ def _inject_theme() -> None:
         .games-team-logos .ev-team-logo { width:40px; height:40px; flex-basis:40px; }
         .games-matchup-copy { min-width:0; overflow:hidden; }
         .games-matchup-copy strong {
-            display:block; color:#f3f6fa; font-size:.92rem; line-height:1.2;
+            display:block; color:#f3f6fa; font-size:1.03rem; line-height:1.22;
             overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
         }
         .games-matchup-copy small {
-            display:block; margin-top:3px; color:#94a2b4; font-size:.68rem;
+            display:block; margin-top:4px; color:#a3afbf; font-size:.76rem;
         }
         .games-chevron {
             color:#9cabbc; font-size:1rem; text-align:center; transition:transform .14s ease;
@@ -912,7 +912,7 @@ def _inject_theme() -> None:
         }
         .games-market-group + .games-market-group { margin-top:8px; }
         .games-market-group > summary {
-            padding:.65rem .75rem; cursor:pointer; color:#e7edf5; font-size:.78rem;
+            padding:.72rem .8rem; cursor:pointer; color:#e7edf5; font-size:.88rem;
             font-weight:750; list-style:none;
         }
         .games-market-group > summary::-webkit-details-marker { display:none; }
@@ -923,24 +923,24 @@ def _inject_theme() -> None:
         .games-odds-scroll { overflow-x:auto; border-top:1px solid #26374b; }
         .games-odds-table {
             width:100%; min-width:860px; border-collapse:collapse; table-layout:fixed;
-            color:#dbe3ec; font-size:.74rem;
+            color:#dbe3ec; font-size:.84rem;
         }
         .games-odds-table th,.games-odds-table td {
             border-bottom:1px solid #203043; text-align:center;
         }
         .games-odds-table tr:last-child td { border-bottom:0; }
         .games-odds-table th {
-            padding:.58rem .5rem; color:#91a0b2; font-size:.62rem; font-weight:650;
+            padding:.66rem .55rem; color:#a0adbd; font-size:.7rem; font-weight:700;
             text-transform:uppercase; letter-spacing:.035em;
         }
         .games-odds-table th:first-child,.games-odds-table td:first-child {
             width:210px; padding:.65rem .7rem; text-align:left;
         }
-        .games-selection strong { display:block; color:#edf2f7; font-size:.76rem; }
-        .games-selection small { display:block; margin-top:2px; color:#8f9daf; font-size:.62rem; }
+        .games-selection strong { display:block; color:#edf2f7; font-size:.86rem; }
+        .games-selection small { display:block; margin-top:3px; color:#9eabbc; font-size:.7rem; }
         .games-price-cell { padding:0; }
         .games-price-link {
-            display:block; width:100%; padding:.72rem .45rem; color:#dce4ed !important;
+            display:block; width:100%; padding:.8rem .5rem; color:#dce4ed !important;
             text-decoration:none !important; white-space:nowrap; transition:background .12s ease;
         }
         .games-price-link:hover,.games-price-link:focus-visible {
@@ -995,7 +995,7 @@ def _inject_theme() -> None:
         .st-key-ev_filter_bar [data-baseweb="select"] > div,
         .st-key-ev_filter_bar [data-testid="stPopover"] button {
             background:#08121e; border-color:#27384b; border-radius:7px;
-            box-sizing:border-box; min-height:38px; height:38px; font-size:.84rem;
+            box-sizing:border-box; min-height:42px; height:42px; font-size:.92rem;
         }
         .st-key-ev_filter_bar [data-baseweb="select"] > div { padding-left:10px; }
         .st-key-ev_filter_bar [data-testid="stPopoverButton"] {
@@ -1012,8 +1012,8 @@ def _inject_theme() -> None:
         }
         .st-key-ev_filter_bar [data-testid="stSelectbox"] { min-width:0; }
         .ev-sort-label {
-            color:#a7b2c1; font-size:.78rem; height:38px; line-height:38px;
-            padding:0; text-align:right; transform:translateY(-18px);
+            color:#b4becb; font-size:.84rem; height:42px; line-height:42px;
+            padding:0; text-align:right; transform:translateY(-20px);
         }
         @media (min-width: 1200px) {
             .st-key-ev_filter_bar [data-testid="stHorizontalBlock"]:has(
@@ -1069,13 +1069,13 @@ def _inject_theme() -> None:
         .ev-filter-chips { gap:10px; margin:.05rem 0 .45rem; }
         .ev-filter-chip {
             padding:7px 12px; border-radius:6px; color:#d1d8e2;
-            background:#101b29; border-color:#26364a; font-size:.76rem;
+            background:#101b29; border-color:#26364a; font-size:.84rem;
         }
-        .ev-update-status { font-size:.75rem; white-space:nowrap; }
+        .ev-update-status { font-size:.83rem; white-space:nowrap; }
         .ev-update-status .ev-freshness-state { display:none; }
         .st-key-header_odds_format { white-space:nowrap; }
         .st-key-header_odds_format [data-testid="stCheckbox"] label {
-            gap:8px; color:#c6d0dc; font-size:.76rem; font-weight:750;
+            gap:8px; color:#d0d8e2; font-size:.84rem; font-weight:750;
         }
         .st-key-header_refresh button {
             width:34px; min-height:34px; padding:0; border:0; background:transparent;
@@ -1090,7 +1090,7 @@ def _inject_theme() -> None:
         .recommendation-heading {
             color:#f3f6fa; font-size:1.25rem; font-weight:850; line-height:1.2;
         }
-        .recommendation-subtitle { color:#a3afbf; font-size:.78rem; margin-top:3px; }
+        .recommendation-subtitle { color:#aeb8c6; font-size:.86rem; margin-top:4px; }
         .ev-table-wrap { margin-top:.15rem; border-radius:7px; background:#08131f; }
         .st-key-recommended_board .ev-table-wrap {
             margin:.5rem 0 .55rem; overflow:visible;
@@ -1101,11 +1101,17 @@ def _inject_theme() -> None:
         [data-testid="stLayoutWrapper"]:has(> .st-key-launch_disclosures) {
             margin-top:auto !important;
         }
-        .st-key-launch_disclosures {
-            padding-top:2.25rem;
-        }
+        .st-key-launch_disclosures { padding-top:2.25rem; clear:both; }
         .st-key-launch_disclosures [data-testid="stExpander"] {
             border-top:1px solid #263448;
+        }
+        .st-key-owner_panel { margin-top:.75rem; padding-bottom:1.5rem; clear:both; }
+        .st-key-owner_panel [data-testid="stExpander"] {
+            border:1px solid #263448; border-radius:8px;
+        }
+        .st-key-more_ev_header { margin:.65rem 0 .15rem; clear:both; }
+        .st-key-more_ev_header [data-testid="stSelectbox"] {
+            max-width:230px; margin-left:auto;
         }
         .board-grid {
             display:grid;
@@ -1114,7 +1120,7 @@ def _inject_theme() -> None:
             align-items:center; column-gap:8px;
         }
         .board-table-head {
-            padding:.55rem .5rem; color:#9ba8b9; font-size:.66rem;
+            padding:.65rem .55rem; color:#aab5c4; font-size:.75rem;
             text-transform:uppercase; letter-spacing:.04em; border-bottom:1px solid #253447;
         }
         .board-table-head > span { text-align:center; }
@@ -1131,11 +1137,13 @@ def _inject_theme() -> None:
         }
         .board-tooltip {
             position:absolute; z-index:80; top:calc(100% + 9px); left:50%;
-            width:260px; transform:translateX(-50%); padding:10px 12px;
-            border:1px solid #34465c; border-radius:7px; background:#101b29;
+            width:min(390px,calc(100vw - 32px)); transform:translateX(-50%);
+            padding:15px 18px;
+            border:1px solid #34465c; border-radius:10px; background:#101b29;
             box-shadow:0 12px 30px rgba(0,0,0,.38); color:#d6dee8;
-            font-size:.72rem; font-weight:500; line-height:1.45; text-align:left;
-            text-transform:none; letter-spacing:0;
+            font-size:1.08rem; font-weight:500; line-height:1.45; text-align:left;
+            text-transform:none; letter-spacing:0; white-space:normal;
+            overflow-wrap:anywhere;
         }
         .board-info.align-right .board-tooltip {
             right:0; left:auto; transform:none;
@@ -1143,10 +1151,10 @@ def _inject_theme() -> None:
         .board-row { border-bottom:1px solid #203043; }
         .board-row:last-child { border-bottom:0; }
         .board-row > summary {
-            list-style:none; cursor:pointer; padding:.62rem .5rem; min-height:70px;
+            list-style:none; cursor:pointer; padding:.7rem .55rem; min-height:78px;
             transition:background .14s ease;
         }
-        .recommended-row > summary { min-height:86px; padding:.72rem .6rem; }
+        .recommended-row > summary { min-height:94px; padding:.8rem .65rem; }
         .board-table-head + .recommended-row > summary {
             border-left:3px solid #d8a928;
             background:linear-gradient(90deg,rgba(216,169,40,.10),transparent 34%);
@@ -1181,32 +1189,32 @@ def _inject_theme() -> None:
         }
         .board-matchup-copy { min-width:0; }
         .board-matchup-copy strong {
-            color:#f3f6fa; font-size:.96rem; line-height:1.15; display:block;
+            color:#f3f6fa; font-size:1.04rem; line-height:1.18; display:block;
             overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
         }
         .board-matchup-copy span {
-            color:#b5bfcd; font-size:.78rem; line-height:1.25; display:block;
+            color:#c0c9d5; font-size:.86rem; line-height:1.28; display:block;
             overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
         }
-        .board-matchup-copy small { color:#96a3b5; font-size:.69rem; }
-        .board-cell { color:#d6dde6; font-size:.8rem; text-align:center; }
-        .board-cell strong { display:block; color:#f2f5f8; font-size:.94rem; }
-        .board-cell small { display:block; color:#9aa6b6; font-size:.66rem; margin-top:2px; }
-        .board-ev strong,.board-odds strong { color:#35df80; font-size:1.08rem; }
+        .board-matchup-copy small { color:#a5b1c0; font-size:.76rem; }
+        .board-cell { color:#dbe2ea; font-size:.88rem; text-align:center; }
+        .board-cell strong { display:block; color:#f2f5f8; font-size:1rem; }
+        .board-cell small { display:block; color:#a8b3c1; font-size:.73rem; margin-top:3px; }
+        .board-ev strong,.board-odds strong { color:#35df80; font-size:1.14rem; }
         .board-win { justify-self:stretch; text-align:center; }
         .board-win-stack {
             display:flex; width:100%; flex-direction:column; align-items:center; gap:1px;
         }
-        .board-win-stack strong { color:#b778ee; font-size:1.06rem; line-height:1.1; }
-        .board-win-stack small { color:#98a4b4; font-size:.64rem; }
+        .board-win-stack strong { color:#c184f1; font-size:1.12rem; line-height:1.1; }
+        .board-win-stack small { color:#a8b3c1; font-size:.72rem; }
         .board-win-stack em {
-            color:#c3ccd8; font-size:.72rem; font-style:normal; white-space:nowrap;
+            color:#cbd3dd; font-size:.8rem; font-style:normal; white-space:nowrap;
         }
         .board-action-cell { justify-self:center; }
         .board-action {
-            display:inline-flex; align-items:center; justify-content:center; min-height:34px;
-            padding:5px 9px; border:1px solid #16894c; border-radius:5px;
-            color:#35df80 !important; text-decoration:none !important; font-size:.78rem;
+            display:inline-flex; align-items:center; justify-content:center; min-height:38px;
+            padding:7px 12px; border:1px solid #16894c; border-radius:6px;
+            color:#35df80 !important; text-decoration:none !important; font-size:.86rem;
             font-weight:800; text-align:center; line-height:1.2;
         }
         .recommended-row .board-action {
@@ -1218,7 +1226,7 @@ def _inject_theme() -> None:
         }
         .all-bets-count {
             display:inline-flex; padding:2px 9px; border-radius:999px;
-            background:#063d26; color:#37df82; font-size:.72rem;
+            background:#063d26; color:#37df82; font-size:.8rem;
         }
         .board-pagination-note { color:#a9b4c2; font-size:.7rem; text-align:right; }
         .st-key-load_more_ev button {
@@ -1319,7 +1327,7 @@ def _inject_theme() -> None:
                 grid-template-columns:30px minmax(0,1fr) minmax(94px,.75fr);
                 grid-template-rows:auto auto auto auto; gap:8px;
             }
-            .board-row > summary { min-height:0; padding:.7rem .45rem; }
+            .board-row > summary { min-height:0; padding:.82rem .55rem; }
             .board-rank { grid-column:1; grid-row:1 / span 4; align-self:start; }
             .board-matchup { grid-column:2 / span 2; grid-row:1; }
             .board-ev { grid-column:2; grid-row:2; text-align:left; }
@@ -1329,13 +1337,18 @@ def _inject_theme() -> None:
             .board-action-cell { grid-column:2 / span 2; grid-row:4; }
             .board-action { width:100%; box-sizing:border-box; }
             .board-ev::before,.board-odds::before,.board-win::before {
-                display:block; color:#748398; font-size:.54rem; font-weight:800;
+                display:block; color:#8795a8; font-size:.64rem; font-weight:800;
                 letter-spacing:.06em; margin-bottom:2px;
             }
             .board-ev::before { content:"EV"; }
             .board-odds::before { content:"BEST ODDS"; }
             .board-win::before { content:"WIN PROBABILITY"; }
             .board-win-stack { align-items:flex-start; }
+            .board-matchup-copy strong { font-size:1rem; }
+            .board-matchup-copy span { font-size:.84rem; }
+            .board-matchup-copy small { font-size:.74rem; }
+            .board-cell { font-size:.86rem; }
+            .board-action { min-height:42px; font-size:.9rem; }
             .ev-team-logo { width:40px; height:40px; flex-basis:40px; }
             .ev-price-grid {
                 grid-template-columns:minmax(110px,1fr) 72px 88px 70px;
@@ -1364,6 +1377,16 @@ def _inject_theme() -> None:
             .st-key-ev_filter_bar [data-testid="stHorizontalBlock"]:has(
                 .st-key-ev_sport_filter
             ) > [data-testid="stColumn"]:nth-child(8) { grid-column:1 / -1; }
+            .st-key-more_ev_header [data-testid="stHorizontalBlock"] {
+                display:grid !important; grid-template-columns:1fr; gap:6px;
+            }
+            .st-key-more_ev_header [data-testid="stColumn"] {
+                width:auto !important; min-width:0 !important; flex:unset !important;
+            }
+            .st-key-more_ev_header [data-testid="stSelectbox"] {
+                max-width:none; margin-left:0;
+            }
+            .all-bets-title { margin:.6rem .15rem .1rem; }
         }
         @media (max-width: 480px) {
             .block-container { padding:.55rem .55rem 1rem; }
@@ -1506,6 +1529,25 @@ def _market_label(market: MarketKey) -> str:
     return label
 
 
+def _event_team_names(event: Event) -> tuple[str, str]:
+    """Return usable home/away names when a feed supplies generic participants."""
+    home_name = event.home.name.strip()
+    away_name = event.away.name.strip()
+    generic_home = home_name.casefold() in {"home", "home team"}
+    generic_away = away_name.casefold() in {"away", "away team"}
+    parsed_home: str | None = None
+    parsed_away: str | None = None
+    if " at " in event.name:
+        parsed_away, parsed_home = (part.strip() for part in event.name.split(" at ", 1))
+    elif " vs " in event.name:
+        parsed_home, parsed_away = (part.strip() for part in event.name.split(" vs ", 1))
+    if generic_home and parsed_home:
+        home_name = parsed_home
+    if generic_away and parsed_away:
+        away_name = parsed_away
+    return home_name, away_name
+
+
 def _selection_label(quote: Quote, event: Event | None = None) -> str:
     market = quote.outcome.market
     if market.kind is MarketKind.PLAYER_PROP:
@@ -1516,10 +1558,11 @@ def _selection_label(quote: Quote, event: Event | None = None) -> str:
         return f"{player_name} {side}"
     side = quote.outcome.side.value.title()
     if event is not None:
+        home_name, away_name = _event_team_names(event)
         if quote.outcome.side is OutcomeSide.HOME:
-            side = event.home.name
+            side = home_name
         elif quote.outcome.side is OutcomeSide.AWAY:
-            side = event.away.name
+            side = away_name
         elif quote.outcome.side is OutcomeSide.DRAW:
             side = "Draw"
     if market.kind is MarketKind.SPREAD and market.line is not None:
@@ -2138,22 +2181,20 @@ def _game_event_markup(
     event_quotes: tuple[Quote, ...],
     sportsbook_names: list[str],
     odds_format: str,
-    *,
-    expanded: bool,
 ) -> str:
     local_start = event.start_time.astimezone()
     time_label = local_start.strftime("%I:%M %p").lstrip("0")
-    away_logo = _team_logo_markup(event.away.name, event.league_id)
-    home_logo = _team_logo_markup(event.home.name, event.league_id)
+    home_name, away_name = _event_team_names(event)
+    away_logo = _team_logo_markup(away_name, event.league_id)
+    home_logo = _team_logo_markup(home_name, event.league_id)
     market_markup = _game_market_sections_markup(
         event_quotes,
         sportsbook_names,
         odds_format,
         event,
     )
-    open_attribute = " open" if expanded else ""
     return (
-        f'<details class="games-event"{open_attribute}>'
+        '<details class="games-event">'
         '<summary>'
         f'<span class="games-time">{html.escape(time_label)}</span>'
         '<span class="games-matchup"><span class="games-team-logos">'
@@ -2279,11 +2320,12 @@ def _render_event_board(
     filtered_events: list[Event] = []
     for event in available_events:
         event_quote_rows = quotes_by_event[event.id]
+        home_name, away_name = _event_team_names(event)
         searchable = " ".join(
             [
                 event.name,
-                event.home.name,
-                event.away.name,
+                home_name,
+                away_name,
                 event.league_id,
                 *(_selection_label(quote, event) for quote in event_quote_rows),
             ]
@@ -2327,7 +2369,6 @@ def _render_event_board(
     day_groups: dict[date, list[Event]] = {}
     for event in visible_events:
         day_groups.setdefault(event.start_time.astimezone().date(), []).append(event)
-    first_event_id = visible_events[0].id
     for event_date, day_events in day_groups.items():
         if event_date == local_today:
             day_label = "Today"
@@ -2347,7 +2388,6 @@ def _render_event_board(
                 quotes_by_event[event.id],
                 sportsbook_names,
                 odds_format,
-                expanded=event.id == first_event_id,
             )
             for event in day_events
         )
@@ -2369,6 +2409,10 @@ def _sportsbook_toggle_key(mode: str, book: str) -> str:
 
 def _sportsbook_preferences_key(mode: str) -> str:
     return f"sportsbook_preferences_{_provider_id(mode)}"
+
+
+def _sportsbook_default_enabled(book: str) -> bool:
+    return book in PRIORITY_BOOKS
 
 
 def _decode_sportsbook_preferences(
@@ -2555,14 +2599,14 @@ def _render_ev_filter_bar(
                 st.session_state[_sportsbook_toggle_key(mode, book)] = (
                     book in saved_books
                     if saved_books is not None
-                    else book in (*PRIORITY_BOOKS, "Pinnacle")
+                    else _sportsbook_default_enabled(book)
                 )
             st.session_state[preference_session_key] = True
         else:
             for book in available_books:
                 st.session_state.setdefault(
                     _sportsbook_toggle_key(mode, book),
-                    book in (*PRIORITY_BOOKS, "Pinnacle"),
+                    _sportsbook_default_enabled(book),
                 )
         selected_before = tuple(
             book
@@ -2622,7 +2666,10 @@ def _render_ev_filter_bar(
                 )
 
         with more_col.popover("More Filters", width="stretch"):
-            st.caption("Adjust several filters, then apply once.")
+            st.caption(
+                "Probability and odds-range controls refine Recommended Bets only. "
+                "The remaining controls also filter More +EV Bets."
+            )
             with st.form("secondary_ev_filters", border=False):
                 implied_preset = st.selectbox(
                     "Minimum break-even probability",
@@ -2748,9 +2795,11 @@ def _render_ev_filter_bar(
 
     chips: list[str] = []
     if implied_percent > 0:
-        chips.append(f"Break-even Prob. ≥ {implied_percent}%")
+        chips.append(f"Recommended probability ≥ {implied_percent}%")
     if use_odds_range:
-        chips.append(f"Odds: {minimum_american:+d} to {maximum_american:+d}")
+        chips.append(
+            f"Recommended odds: {minimum_american:+d} to {maximum_american:+d}"
+        )
     if consensus_preset != "Any":
         chips.append(f"Consensus {consensus_preset}")
     if start_window != "Any time":
@@ -2863,6 +2912,41 @@ def _filter_value_opportunities(
     else:
         filtered.sort(key=lambda item: item.expected_value, reverse=True)
     return tuple(filtered)
+
+
+def _without_recommendation_probability_screen(filters: EVFilterState) -> EVFilterState:
+    """Keep shared filters while allowing longshots into the complete +EV list."""
+    return replace(
+        filters,
+        minimum_implied_probability=Decimal("0"),
+        minimum_american_odds=None,
+        maximum_american_odds=None,
+    )
+
+
+def _sort_more_ev_values(
+    values: tuple[ValueOpportunity, ...],
+    event_map: dict[str, Event],
+    sort_by: str,
+) -> tuple[ValueOpportunity, ...]:
+    if sort_by == "Starting Soon":
+        return tuple(
+            sorted(
+                values,
+                key=lambda item: event_map[
+                    item.quote.outcome.market.event_id
+                ].start_time,
+            )
+        )
+    if sort_by == "Best Odds":
+        return tuple(
+            sorted(values, key=lambda item: item.quote.decimal_odds, reverse=True)
+        )
+    if sort_by == "Win Probability":
+        return tuple(
+            sorted(values, key=lambda item: item.fair_probability, reverse=True)
+        )
+    return tuple(sorted(values, key=lambda item: item.expected_value, reverse=True))
 
 
 def _recommended_value_opportunities(
@@ -3054,8 +3138,8 @@ def _render_priority_value_bets_legacy(
     if not values:
         st.markdown(
             '<div class="ev-empty"><strong>No +EV bets match these filters.</strong>'
-            "Try lowering your minimum EV or break-even probability, expanding your "
-            "sportsbook selection, or clearing some filters.</div>",
+            "Try lowering your minimum EV, expanding your sportsbook selection, or "
+            "clearing some filters.</div>",
             unsafe_allow_html=True,
         )
         return
@@ -3111,10 +3195,11 @@ def _render_priority_value_bets_legacy(
                 unsafe_allow_html=True,
             )
             if event is not None:
+                home_name, away_name = _event_team_names(event)
                 if top.quote.outcome.side is OutcomeSide.HOME:
-                    opponent = f"vs {event.away.name}"
+                    opponent = f"vs {away_name}"
                 elif top.quote.outcome.side is OutcomeSide.AWAY:
-                    opponent = f"vs {event.home.name}"
+                    opponent = f"vs {home_name}"
                 else:
                     opponent = event.name
                 st.markdown(
@@ -3317,12 +3402,13 @@ def _board_row_markup(
 ) -> str:
     event = event_map[opportunity.quote.outcome.market.event_id]
     selection = _selection_label(opportunity.quote, event)
+    home_name, away_name = _event_team_names(event)
     if opportunity.quote.outcome.side is OutcomeSide.HOME:
-        team_name = event.home.name
-        opponent = event.away.name
+        team_name = home_name
+        opponent = away_name
     elif opportunity.quote.outcome.side is OutcomeSide.AWAY:
-        team_name = event.away.name
-        opponent = event.home.name
+        team_name = away_name
+        opponent = home_name
     else:
         team_name = selection
         opponent = event.name
@@ -3391,18 +3477,22 @@ def _board_header_markup() -> str:
     return (
         '<div class="board-table-head board-grid">'
         '<span>#</span><span>MATCHUP</span><span class="board-market">MARKET</span>'
-        '<span class="board-ev"><details class="board-info"><summary>EV ⓘ</summary>'
+        '<span class="board-ev"><details class="board-info" name="board-tooltip">'
+        '<summary>EV ⓘ</summary>'
         '<div class="board-tooltip">Estimated long-term return using the consensus win '
         'probability and the best available price.</div></details></span>'
-        '<span class="board-odds"><details class="board-info"><summary>BEST ODDS ⓘ</summary>'
+        '<span class="board-odds"><details class="board-info" name="board-tooltip">'
+        '<summary>BEST ODDS ⓘ</summary>'
         '<div class="board-tooltip">The highest payout currently offered by a sportsbook '
         'you selected as available to bet with.</div></details></span>'
-        '<span class="board-fair"><details class="board-info"><summary>FAIR ODDS ⓘ</summary>'
+        '<span class="board-fair"><details class="board-info" name="board-tooltip">'
+        '<summary>FAIR ODDS ⓘ</summary>'
         '<div class="board-tooltip">Our estimated no-vig price. We remove each sportsbook’s '
         'margin and average every book with both sides of this exact market. The global '
         'sportsbook list can be larger because not every book covers every event and market.'
         '</div></details></span>'
-        '<span class="board-win"><details class="board-info align-right">'
+        '<span class="board-win"><details class="board-info align-right" '
+        'name="board-tooltip">'
         '<summary>WIN PROBABILITY ⓘ</summary><div class="board-tooltip">The no-vig consensus '
         'chance of winning. Break-even is the probability required at the offered price.'
         '</div></details></span>'
@@ -3416,6 +3506,8 @@ def _render_priority_value_bets(
     quotes: tuple[Quote, ...],
     odds_format: str,
     as_of: datetime,
+    *,
+    recommendation_values: tuple[ValueOpportunity, ...] | None = None,
 ) -> None:
     if not values:
         st.markdown(
@@ -3432,7 +3524,7 @@ def _render_priority_value_bets(
             unsafe_allow_html=True,
         )
         recommended = _recommended_value_opportunities(
-            values,
+            values if recommendation_values is None else recommendation_values,
             event_map,
             as_of=as_of,
             style="Balanced",
@@ -3465,18 +3557,37 @@ def _render_priority_value_bets(
     recommended_keys = {
         (item.quote.sportsbook.id, item.quote.outcome.id) for item in recommended
     }
-    ranked_values = tuple(sorted(values, key=lambda item: item.expected_value, reverse=True))
     additional_values = tuple(
         item
-        for item in ranked_values
+        for item in values
         if (item.quote.sportsbook.id, item.quote.outcome.id) not in recommended_keys
     )
     if not additional_values:
         return
-    st.markdown(
-        '<div class="all-bets-title">More +EV Bets '
-        f'<span class="all-bets-count">{len(additional_values)}</span></div>',
-        unsafe_allow_html=True,
+    with st.container(key="more_ev_header"):
+        title_column, sort_column = st.columns(
+            [4, 1.15], vertical_alignment="bottom"
+        )
+        title_column.markdown(
+            '<div class="all-bets-title">More +EV Bets '
+            f'<span class="all-bets-count">{len(additional_values)}</span></div>',
+            unsafe_allow_html=True,
+        )
+        more_sort = sort_column.selectbox(
+            "Sort More +EV Bets",
+            [
+                "EV % (High to Low)",
+                "Win Probability",
+                "Best Odds",
+                "Starting Soon",
+            ],
+            key="more_ev_sort",
+            label_visibility="collapsed",
+        )
+    additional_values = _sort_more_ev_values(
+        additional_values,
+        event_map,
+        more_sort,
     )
     visible_count = max(10, int(st.session_state.get("ev_visible_count", 10)))
     visible_count = min(visible_count, len(additional_values))
@@ -3578,6 +3689,8 @@ def _render_overview(
     quotes: tuple[Quote, ...],
     as_of: datetime,
     odds_format: str,
+    *,
+    recommendation_values: tuple[ValueOpportunity, ...] | None = None,
 ) -> None:
     _render_priority_value_bets(
         values,
@@ -3585,6 +3698,7 @@ def _render_overview(
         quotes,
         odds_format,
         as_of,
+        recommendation_values=recommendation_values,
     )
 
 
@@ -4049,20 +4163,28 @@ def run() -> None:
             candidate_sportsbooks=candidate_books,
             include_stale=True,
         )
-        filtered_values = _filter_value_opportunities(
+        recommendation_values = _filter_value_opportunities(
             values,
             event_map,
             ev_filters,
             as_of=as_of,
             max_age=controls["freshness"],
         )
+        all_filtered_values = _filter_value_opportunities(
+            values,
+            event_map,
+            _without_recommendation_probability_screen(ev_filters),
+            as_of=as_of,
+            max_age=controls["freshness"],
+        )
         controls["my_books"] = list(ev_filters.my_books)
         _render_overview(
-            filtered_values,
+            all_filtered_values,
             event_map,
             quotes,
             as_of,
             controls["odds_format"],
+            recommendation_values=recommendation_values,
         )
     else:
         comparison_books = sorted(
@@ -4078,9 +4200,9 @@ def run() -> None:
             is_admin=is_admin,
         )
 
+    _render_launch_disclosures(str(controls["mode"]))
     _render_owner_panel(
         repository,
         str(controls["mode"]),
         is_admin=is_admin,
     )
-    _render_launch_disclosures(str(controls["mode"]))

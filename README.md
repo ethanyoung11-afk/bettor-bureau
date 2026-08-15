@@ -79,8 +79,7 @@ monthly reserve before making provider calls.
 4. Deploy `app.py` on Streamlit Community Cloud from that repository.
 5. Add `SHARED_APP`, `ADMIN_PASSWORD_HASH`, `ODDSPAPI_API_KEY`, and `DATABASE_URL` in
    Streamlit's encrypted secrets panel.
-6. Choose a memorable Streamlit subdomain and share that URL. The current beta is hosted at
-   `linescout-bets.streamlit.app` until the public URL is renamed.
+6. Share the hosted app at `bettor-bureau.streamlit.app`.
 
 The scheduled updater is in `.github/workflows/refresh-odds.yml`. Its free-plan defaults are four
 full refreshes per week, a 250-call monthly limit, and a 25-call owner reserve. Manual owner
