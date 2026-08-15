@@ -2576,8 +2576,8 @@ def _render_sportsbook_preferences_storage(
         on_selected_change=lambda: None,
         on_ready_change=lambda: None,
         key=f"sportsbook_preferences_{stable_id('browser-storage-v1', mode)}",
-        width=0,
-        height=0,
+        width=1,
+        height=1,
     )
     if not result.ready:
         return None
