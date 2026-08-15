@@ -406,6 +406,19 @@ def _invalidate_view_snapshot(provider_id: str) -> None:
     st.session_state.pop("value_opportunity_cache", None)
 
 
+def _quote_is_trusted(
+    quote: Quote,
+    *,
+    as_of: datetime,
+    max_age: timedelta = MAX_TRUSTED_QUOTE_AGE,
+) -> bool:
+    legacy_fake_freshness = (
+        quote.provider_id == "oddspapi"
+        and quote.source_updated_at == quote.observed_at
+    )
+    return not legacy_fake_freshness and is_fresh(quote, as_of=as_of, max_age=max_age)
+
+
 def _value_opportunities_for_books(
     quotes: tuple[Quote, ...],
     sportsbook_names: tuple[str, ...],
@@ -432,9 +445,15 @@ def _value_opportunities_for_books(
         cache = {}
         st.session_state["value_opportunity_cache"] = cache
 
+    as_of = datetime.now(UTC)
+    trusted_quotes = tuple(
+        quote
+        for quote in quotes
+        if _quote_is_trusted(quote, as_of=as_of, max_age=max_age)
+    )
     audit = audit_consensus_value(
-        quotes,
-        as_of=datetime.now(UTC),
+        trusted_quotes,
+        as_of=as_of,
         max_age=max_age,
         candidate_sportsbooks=sportsbook_names,
         include_stale=False,
@@ -2351,7 +2370,11 @@ def _game_market_sections_markup(
             trusted_quotes = tuple(
                 quote
                 for quote in book_quotes.values()
-                if is_fresh(quote, as_of=effective_as_of, max_age=MAX_TRUSTED_QUOTE_AGE)
+                if _quote_is_trusted(
+                    quote,
+                    as_of=effective_as_of,
+                    max_age=MAX_TRUSTED_QUOTE_AGE,
+                )
             )
             best_price = max(
                 (quote.decimal_odds for quote in trusted_quotes),
@@ -2364,7 +2387,7 @@ def _game_market_sections_markup(
                     cells.append('<td class="games-price-cell games-unavailable">—</td>')
                     continue
                 displayed_price = format_odds(book_quote.decimal_odds, odds_format)
-                trusted = is_fresh(
+                trusted = _quote_is_trusted(
                     book_quote,
                     as_of=effective_as_of,
                     max_age=MAX_TRUSTED_QUOTE_AGE,
@@ -3982,7 +4005,11 @@ def _value_comparison_markup(
         edge_class = "positive" if book_edge > 0 else "negative"
         event_url = _sportsbook_event_url(quote)
         url = event_url or _sportsbook_bet_url(quote)
-        trusted = is_fresh(quote, as_of=as_of, max_age=MAX_TRUSTED_QUOTE_AGE)
+        trusted = _quote_is_trusted(
+            quote,
+            as_of=as_of,
+            max_age=MAX_TRUSTED_QUOTE_AGE,
+        )
         action = (
             f'<a class="ev-price-action" href="{html.escape(url, quote=True)}" '
             f'target="_blank" rel="noopener noreferrer">'

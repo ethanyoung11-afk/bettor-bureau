@@ -213,6 +213,27 @@ def test_stale_provider_prices_cannot_create_value_bets(now):
     assert values == ()
 
 
+def test_legacy_oddspapi_quotes_cannot_look_fresh_after_retrieval(now):
+    snapshot = generate_demo_snapshots(now)[-1]
+    legacy_quotes = tuple(
+        replace(
+            quote,
+            provider_id="oddspapi",
+            source_updated_at=now,
+            observed_at=now,
+        )
+        for quote in snapshot.quotes
+    )
+
+    values = _value_opportunities_for_books(
+        legacy_quotes,
+        tuple({quote.sportsbook.name for quote in legacy_quotes}),
+        max_age=timedelta(minutes=30),
+    )
+
+    assert values == ()
+
+
 def test_owner_password_uses_a_sha256_digest():
     expected_hash = "889bf59808d9edbab7703dd7db993fc02298c7d1bb20c52ba3114a9185903124"
 
