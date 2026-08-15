@@ -1241,8 +1241,16 @@ def _inject_theme() -> None:
         .board-table-head .board-market { text-align:center; }
         .board-table-head .board-win { text-align:center; }
         .board-info { position:relative; display:inline-block; }
+        .board-info[open] { z-index:90; }
+        .board-info[open] > summary::before {
+            content:""; position:fixed; inset:0; z-index:70; cursor:default;
+        }
+        .board-table-head:has(.board-info[open]) .board-info:not([open]) {
+            z-index:100;
+        }
         .board-info > summary {
-            list-style:none; cursor:pointer; user-select:none; white-space:nowrap;
+            position:relative; z-index:80; list-style:none; cursor:pointer;
+            user-select:none; white-space:nowrap;
         }
         .board-info > summary::-webkit-details-marker { display:none; }
         .board-info > summary:focus-visible {
