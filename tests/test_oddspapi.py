@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from decimal import Decimal
 
+import requests
+
 from odds_scanner.domain import MarketKind, OutcomeSide
 from odds_scanner.providers.oddspapi import (
     ODDSPAPI_PRIMARY_TOURNAMENT_IDS,
@@ -40,6 +42,29 @@ class StubSession:
         del timeout
         endpoint = url.rsplit("/", 1)[-1]
         self.calls.append((endpoint, params))
+        return StubResponse(self.payloads[endpoint])
+
+
+class PartiallyRateLimitedSession(StubSession):
+    def get(
+        self,
+        url: str,
+        *,
+        params: dict[str, object],
+        timeout: float,
+    ) -> StubResponse:
+        endpoint = url.rsplit("/", 1)[-1]
+        self.calls.append((endpoint, params))
+        if endpoint == "fixtures" and params.get("tournamentId") == "31":
+            response = StubResponse({})
+            response.status_code = 429
+            response.text = "rate limited"
+
+            def fail() -> None:
+                raise requests.HTTPError("429")
+
+            response.raise_for_status = fail  # type: ignore[method-assign]
+            return response
         return StubResponse(self.payloads[endpoint])
 
 
@@ -411,6 +436,49 @@ def test_oddspapi_can_merge_unpriced_schedule_with_priced_events() -> None:
         "Montreal Alouettes at Ottawa Redblacks",
     }
     assert [call[0] for call in session.calls] == [
+        "fixtures",
+        "odds-by-tournaments",
+    ]
+
+
+def test_schedule_failure_does_not_block_other_leagues_or_odds() -> None:
+    cfl_event = {
+        "fixtureId": "cfl-fixture",
+        "tournamentId": 790,
+        "participant1Name": "BC Lions",
+        "participant2Name": "Calgary Stampeders",
+        "startTime": "2026-08-24T00:00:00Z",
+        "updatedAt": "2026-08-15T16:00:00Z",
+        "bookmakerOdds": {},
+    }
+    session = PartiallyRateLimitedSession(
+        {
+            "fixtures": [cfl_event],
+            "odds-by-tournaments": [],
+        }
+    )
+    provider = OddsPapiProvider(
+        api_key="test",
+        bookmaker_slugs=("playnow",),
+        include_schedule=True,
+        bookmaker_cooldown_seconds=0,
+        schedule_cooldown_seconds=0,
+        tournament_ids={"americanfootball_nfl": 31, "americanfootball_cfl": 790},
+        market_catalog={str(item["marketId"]): item for item in _catalog()},
+        session=session,  # type: ignore[arg-type]
+    )
+
+    snapshot = provider.fetch_snapshot(
+        ["americanfootball_nfl", "americanfootball_cfl"],
+        ["h2h"],
+    )
+
+    assert [event.name for event in snapshot.events] == [
+        "Calgary Stampeders at BC Lions"
+    ]
+    assert len(provider.schedule_errors) == 1
+    assert [call[0] for call in session.calls] == [
+        "fixtures",
         "fixtures",
         "odds-by-tournaments",
     ]

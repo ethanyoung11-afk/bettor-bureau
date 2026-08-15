@@ -251,6 +251,12 @@ def main() -> int:
             diagnostics.finished_at.isoformat(),
         )
     used_after = record_requests(repository, provider.request_count)
+    if provider.schedule_errors:
+        print(
+            "Schedule unavailable for "
+            f"{len(provider.schedule_errors)} of {len(league_keys)} league calendars; "
+            "the remaining schedules and odds were refreshed."
+        )
     print(
         f"{diagnostics.status.value}: {diagnostics.events_checked} events, "
         f"{diagnostics.sportsbooks_checked} books, {diagnostics.quotes_stored} prices, "

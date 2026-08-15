@@ -226,6 +226,7 @@ class OddsPapiProvider:
     include_all_bookmakers: bool = False
     include_schedule: bool = False
     bookmaker_cooldown_seconds: float = 1.6
+    schedule_cooldown_seconds: float = 5.0
     timeout_seconds: float = 30.0
     base_url: str = "https://api.oddspapi.io/v4"
     session: requests.Session = field(default_factory=requests.Session)
@@ -235,6 +236,7 @@ class OddsPapiProvider:
     market_normalizer: MarketNormalizer = field(default_factory=MarketNormalizer)
     event_url_resolver: Callable[[Event], str | None] | None = None
     request_count: int = field(default=0, init=False)
+    schedule_errors: list[str] = field(default_factory=list, init=False)
     _last_request_at: float | None = field(default=None, init=False)
 
     @property
@@ -271,16 +273,29 @@ class OddsPapiProvider:
             "oddsFormat": "decimal",
         }
         raw_events: list[Mapping[str, Any]] = []
+        self.schedule_errors.clear()
         if self.include_schedule:
             for tournament_id in tournament_ids:
-                payload = self._request(
-                    "fixtures",
-                    {
-                        "tournamentId": tournament_id,
-                        "statusId": 0,
-                        "language": "en",
-                    },
-                )
+                if self._last_request_at is not None and self.schedule_cooldown_seconds > 0:
+                    elapsed = monotonic() - self._last_request_at
+                    remaining = self.schedule_cooldown_seconds - elapsed
+                    if remaining > 0:
+                        sleep(remaining)
+                try:
+                    payload = self._request(
+                        "fixtures",
+                        {
+                            "tournamentId": tournament_id,
+                            "statusId": 0,
+                            "language": "en",
+                        },
+                    )
+                except OddsPapiError as exc:
+                    # Fixture coverage is not uniform across tournaments. A missing
+                    # schedule must not prevent the remaining leagues or live odds
+                    # from refreshing.
+                    self.schedule_errors.append(f"{tournament_id}: {exc}")
+                    continue
                 raw_events.extend(self._event_list(payload))
         if self.include_all_bookmakers:
             payload = self._request("odds-by-tournaments", odds_params)
