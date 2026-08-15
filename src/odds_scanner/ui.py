@@ -1104,11 +1104,37 @@ def _inject_theme() -> None:
         }
         .st-key-header_refresh button p { display:none; }
         .st-key-recommended_board {
-            border:1px solid #25364a !important; border-radius:8px;
-            background:rgba(7,17,28,.62); padding:10px 10px 18px;
             margin:.2rem 0 .45rem;
         }
         .st-key-recommended_board [data-testid="stVerticalBlock"] { gap:.2rem; }
+        .recommended-section {
+            border:1px solid #25364a; border-radius:8px;
+            background:rgba(7,17,28,.62); overflow:hidden;
+        }
+        .recommended-section > summary {
+            display:flex; align-items:center; gap:9px; min-height:48px;
+            padding:11px 14px; list-style:none; cursor:pointer;
+            border-bottom:1px solid #25364a; user-select:none;
+        }
+        .recommended-section > summary::-webkit-details-marker { display:none; }
+        .recommended-section > summary:hover { background:#0d1b29; }
+        .recommended-section > summary:focus { outline:none !important; }
+        .recommended-section > summary:focus-visible {
+            outline:none !important;
+            box-shadow:inset 0 0 0 1px rgba(56,223,131,.58) !important;
+        }
+        .recommended-section > summary::after {
+            content:"⌃"; margin-left:auto; color:#aeb8c6; font-size:1rem;
+            transition:transform .15s ease;
+        }
+        .recommended-section:not([open]) > summary { border-bottom:0; }
+        .recommended-section:not([open]) > summary::after { transform:rotate(180deg); }
+        .recommended-count {
+            display:inline-flex; align-items:center; justify-content:center;
+            min-width:24px; height:22px; padding:0 7px; border-radius:999px;
+            background:#0b5d39; color:#58e99b; font-size:.78rem; font-weight:850;
+        }
+        .recommended-content { padding:0 10px 12px; }
         .recommendation-heading {
             color:#f3f6fa; font-size:1.25rem; font-weight:850; line-height:1.2;
         }
@@ -3558,41 +3584,43 @@ def _render_priority_value_bets(
         )
         return
 
-    with st.container(border=True, key="recommended_board"):
+    recommended = _recommended_value_opportunities(
+        values if recommendation_values is None else recommendation_values,
+        event_map,
+        as_of=as_of,
+        style="Balanced",
+    )
+    if recommended:
+        recommendation_rows = "".join(
+            _board_row_markup(
+                opportunity,
+                rank,
+                event_map,
+                quotes,
+                odds_format,
+                as_of,
+                recommended=True,
+            )
+            for rank, opportunity in enumerate(recommended, start=1)
+        )
+        recommendation_content = (
+            f'<div class="ev-table-wrap">{_board_header_markup()}'
+            f"{recommendation_rows}</div>"
+        )
+    else:
+        recommendation_content = (
+            '<div class="ev-empty"><strong>No bets currently meet all recommendation '
+            "criteria.</strong></div>"
+        )
+    with st.container(key="recommended_board"):
         st.markdown(
-            '<div class="recommendation-heading">Recommended Bets</div>',
+            '<details class="recommended-section" open>'
+            '<summary><span class="recommendation-heading">Recommended Bets</span>'
+            f'<span class="recommended-count">{len(recommended)}</span></summary>'
+            f'<div class="recommended-content">{recommendation_content}</div>'
+            "</details>",
             unsafe_allow_html=True,
         )
-        recommended = _recommended_value_opportunities(
-            values if recommendation_values is None else recommendation_values,
-            event_map,
-            as_of=as_of,
-            style="Balanced",
-        )
-        if recommended:
-            recommendation_rows = "".join(
-                _board_row_markup(
-                    opportunity,
-                    rank,
-                    event_map,
-                    quotes,
-                    odds_format,
-                    as_of,
-                    recommended=True,
-                )
-                for rank, opportunity in enumerate(recommended, start=1)
-            )
-            st.markdown(
-                f'<div class="ev-table-wrap">{_board_header_markup()}'
-                f"{recommendation_rows}</div>",
-                unsafe_allow_html=True,
-            )
-        else:
-            st.markdown(
-                '<div class="ev-empty"><strong>No bets currently meet all recommendation '
-                "criteria.</strong></div>",
-                unsafe_allow_html=True,
-            )
 
     additional_values = _exclude_recommended_opportunities(values, recommended)
     if not additional_values:
