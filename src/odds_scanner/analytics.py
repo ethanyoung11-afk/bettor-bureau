@@ -313,6 +313,7 @@ def detect_consensus_value(
             consensus = [
                 (book_id, fair[candidate.outcome.side])
                 for book_id, fair in fair_by_book.items()
+                if book_id != candidate.sportsbook.id
             ]
             if len(consensus) < 2:
                 continue

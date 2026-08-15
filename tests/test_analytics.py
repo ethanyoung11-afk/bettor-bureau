@@ -92,7 +92,7 @@ def test_consensus_value_can_target_playnow_and_betway_only(now):
 
     assert values
     assert {item.quote.sportsbook.name for item in values} <= {"PlayNow", "Betway"}
-    assert all(item.quote.sportsbook.name in item.reference_sportsbooks for item in values)
+    assert all(item.quote.sportsbook.name not in item.reference_sportsbooks for item in values)
     assert all(item.reference_books >= 2 for item in values)
 
 
@@ -112,10 +112,10 @@ def test_personal_book_filter_does_not_limit_consensus_books(now):
     assert {item.quote.sportsbook.name for item in values} == {"PlayNow"}
     assert all(item.reference_books >= 2 for item in values)
     assert any("Betway" in item.reference_sportsbooks for item in values)
-    assert all("PlayNow" in item.reference_sportsbooks for item in values)
+    assert all("PlayNow" not in item.reference_sportsbooks for item in values)
 
 
-def test_consensus_includes_every_complete_book_including_the_candidate(now):
+def test_consensus_uses_every_complete_reference_book_except_the_candidate(now):
     market = make_market()
     quotes = tuple(
         quote
@@ -140,9 +140,9 @@ def test_consensus_includes_every_complete_book_including_the_candidate(now):
     )
 
     assert values
-    assert all(item.reference_books == 4 for item in values)
+    assert all(item.reference_books == 3 for item in values)
     assert all(
-        item.reference_sportsbooks == ("Book-A", "Book-B", "Book-C", "Book-D")
+        item.reference_sportsbooks == ("Book-B", "Book-C", "Book-D")
         for item in values
     )
 

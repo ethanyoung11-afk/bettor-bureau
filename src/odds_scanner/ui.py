@@ -2478,18 +2478,18 @@ def _reset_secondary_ev_filters() -> None:
 def _reset_ev_filters() -> None:
     _reset_secondary_ev_filters()
     st.session_state["ev_sport_filter"] = "All Sports"
-    st.session_state["ev_market_filter"] = "Moneyline"
+    st.session_state["ev_market_filter"] = "All Markets"
     st.session_state["ev_minimum_preset"] = "2%+"
     st.session_state["ev_sort_by"] = "EV % (High to Low)"
 
 
 def _set_ev_page(page: int) -> None:
     st.session_state["ev_page"] = max(0, page)
-    st.session_state["ev_visible_count"] = 10
+    st.session_state["ev_visible_count"] = 20
 
 
-def _show_more_ev_bets(increment: int = 10) -> None:
-    current = max(10, int(st.session_state.get("ev_visible_count", 10)))
+def _show_more_ev_bets(increment: int = 20) -> None:
+    current = max(20, int(st.session_state.get("ev_visible_count", 20)))
     st.session_state["ev_visible_count"] = current + increment
 
 
@@ -2503,7 +2503,7 @@ def _render_ev_filter_bar(
     *,
     persist_preferences: bool,
 ) -> EVFilterState:
-    if not st.session_state.get("ev_reference_defaults_v4"):
+    if not st.session_state.get("ev_reference_defaults_v5"):
         st.session_state["ev_implied_preset"] = "Any"
         st.session_state["ev_custom_implied"] = 0.0
         st.session_state["ev_odds_range_enabled"] = False
@@ -2511,10 +2511,10 @@ def _render_ev_filter_bar(
         st.session_state["ev_max_american"] = 300
         st.session_state["ev_consensus_books"] = "Any"
         st.session_state["ev_start_window"] = "Any time"
-        st.session_state["ev_market_filter"] = "Moneyline"
+        st.session_state["ev_market_filter"] = "All Markets"
         st.session_state["ev_minimum_preset"] = "2%+"
         st.session_state["min_ev"] = 2.0
-        st.session_state["ev_reference_defaults_v4"] = True
+        st.session_state["ev_reference_defaults_v5"] = True
     if not st.session_state.get("ev_default_two_v1"):
         st.session_state["ev_minimum_preset"] = "2%+"
         st.session_state["min_ev"] = 2.0
@@ -2668,7 +2668,8 @@ def _render_ev_filter_bar(
         with more_col.popover("More Filters", width="stretch"):
             st.caption(
                 "Probability and odds-range controls refine Recommended Bets only. "
-                "The remaining controls also filter More +EV Bets."
+                "Sport, market, EV, sportsbooks, consensus, timing, and freshness "
+                "filter both sections."
             )
             with st.form("secondary_ev_filters", border=False):
                 implied_preset = st.selectbox(
@@ -2921,6 +2922,21 @@ def _without_recommendation_probability_screen(filters: EVFilterState) -> EVFilt
         minimum_implied_probability=Decimal("0"),
         minimum_american_odds=None,
         maximum_american_odds=None,
+    )
+
+
+def _exclude_recommended_opportunities(
+    values: tuple[ValueOpportunity, ...],
+    recommended: tuple[ValueOpportunity, ...],
+) -> tuple[ValueOpportunity, ...]:
+    """Return the complete filtered +EV list without repeating the top picks."""
+    recommended_keys = {
+        (item.quote.sportsbook.id, item.quote.outcome.id) for item in recommended
+    }
+    return tuple(
+        item
+        for item in values
+        if (item.quote.sportsbook.id, item.quote.outcome.id) not in recommended_keys
     )
 
 
@@ -3488,7 +3504,7 @@ def _board_header_markup() -> str:
         '<span class="board-fair"><details class="board-info" name="board-tooltip">'
         '<summary>FAIR ODDS ⓘ</summary>'
         '<div class="board-tooltip">Our estimated no-vig price. We remove each sportsbook’s '
-        'margin and average every book with both sides of this exact market. The global '
+        'margin and average every other book with both sides of this exact market. The global '
         'sportsbook list can be larger because not every book covers every event and market.'
         '</div></details></span>'
         '<span class="board-win"><details class="board-info align-right" '
@@ -3554,14 +3570,7 @@ def _render_priority_value_bets(
                 unsafe_allow_html=True,
             )
 
-    recommended_keys = {
-        (item.quote.sportsbook.id, item.quote.outcome.id) for item in recommended
-    }
-    additional_values = tuple(
-        item
-        for item in values
-        if (item.quote.sportsbook.id, item.quote.outcome.id) not in recommended_keys
-    )
+    additional_values = _exclude_recommended_opportunities(values, recommended)
     if not additional_values:
         return
     with st.container(key="more_ev_header"):
@@ -3569,12 +3578,12 @@ def _render_priority_value_bets(
             [4, 1.15], vertical_alignment="bottom"
         )
         title_column.markdown(
-            '<div class="all-bets-title">More +EV Bets '
+            '<div class="all-bets-title">Other +EV Bets '
             f'<span class="all-bets-count">{len(additional_values)}</span></div>',
             unsafe_allow_html=True,
         )
         more_sort = sort_column.selectbox(
-            "Sort More +EV Bets",
+            "Sort Other +EV Bets",
             [
                 "EV % (High to Low)",
                 "Win Probability",
@@ -3589,7 +3598,7 @@ def _render_priority_value_bets(
         event_map,
         more_sort,
     )
-    visible_count = max(10, int(st.session_state.get("ev_visible_count", 10)))
+    visible_count = max(20, int(st.session_state.get("ev_visible_count", 20)))
     visible_count = min(visible_count, len(additional_values))
     visible_values = additional_values[:visible_count]
     page_rows = "".join(
@@ -3613,9 +3622,9 @@ def _render_priority_value_bets(
         with button_column, st.container(key="load_more_ev"):
             remaining_count = len(additional_values) - visible_count
             st.button(
-                f"Load {min(10, remaining_count)} more",
+                f"Load {min(20, remaining_count)} more",
                 on_click=_show_more_ev_bets,
-                args=(10,),
+                args=(20,),
                 width="stretch",
             )
 

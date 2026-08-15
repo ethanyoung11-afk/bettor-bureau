@@ -21,6 +21,7 @@ from odds_scanner.ui import (
     _decode_sportsbook_preferences,
     _event_odds_frame,
     _event_team_names,
+    _exclude_recommended_opportunities,
     _filter_value_opportunities,
     _game_event_markup,
     _game_market_sections_markup,
@@ -255,6 +256,49 @@ def test_more_ev_keeps_shared_filters_but_does_not_hide_longshots(now):
     assert more_filters.minimum_ev == filters.minimum_ev
     assert more_filters.my_books == filters.my_books
     assert more_filters.minimum_consensus_books == filters.minimum_consensus_books
+
+
+def test_other_ev_excludes_recommendations_without_dropping_other_markets(now):
+    snapshots = generate_demo_snapshots(now)
+    quotes = deduplicate_quotes(quote for snapshot in snapshots for quote in snapshot.quotes)
+    values = detect_consensus_value(
+        quotes,
+        as_of=now,
+        max_age=timedelta(minutes=5),
+        minimum_ev=Decimal("0"),
+    )
+    events = {event.id: event for event in snapshots[-1].events}
+    filters = EVFilterState(
+        league_id=None,
+        market_kind=None,
+        minimum_ev=Decimal("0"),
+        my_books=(),
+        minimum_implied_probability=Decimal("0"),
+        minimum_american_odds=None,
+        maximum_american_odds=None,
+        minimum_consensus_books=2,
+        starts_before=None,
+        fresh_only=False,
+        sort_by="EV % (High to Low)",
+    )
+
+    all_filtered = _filter_value_opportunities(
+        values,
+        events,
+        filters,
+        as_of=now,
+        max_age=timedelta(minutes=5),
+    )
+    recommended = _recommended_value_opportunities(all_filtered, events, as_of=now)
+    other = _exclude_recommended_opportunities(all_filtered, recommended)
+
+    recommended_keys = {
+        (item.quote.sportsbook.id, item.quote.outcome.id) for item in recommended
+    }
+    other_keys = {(item.quote.sportsbook.id, item.quote.outcome.id) for item in other}
+    assert recommended_keys.isdisjoint(other_keys)
+    assert len(other) + len(recommended) == len(all_filtered)
+    assert {item.quote.outcome.market.kind for item in other}
 
 
 def test_more_ev_has_its_own_sorting(now):
