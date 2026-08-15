@@ -191,6 +191,10 @@ class PostgresQuoteRepository:
         replace_event_ids: Sequence[str] | None = None,
         replace_market_kinds: Sequence[MarketKind] | None = None,
     ) -> None:
+        quotes = tuple(snapshot.quotes)
+        markets = {quote.outcome.market.id: quote.outcome.market for quote in quotes}
+        outcomes = {quote.outcome.id: quote.outcome for quote in quotes}
+        sportsbooks = {quote.sportsbook.id: quote.sportsbook for quote in quotes}
         with self._connection() as cursor:
             cursor.executemany(
                 "INSERT INTO sports(id, name) VALUES (%s, %s) "
@@ -236,8 +240,73 @@ class PostgresQuoteRepository:
                 else tuple(event.id for event in snapshot.events),
                 replace_market_kinds,
             )
-            for quote in snapshot.quotes:
-                self._save_quote(cursor, quote)
+            cursor.executemany(
+                "INSERT INTO markets(id, event_id, kind, required_sides, period, line, "
+                "subject_id, stat_key, variant) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT(id) DO NOTHING",
+                (
+                    (
+                        market.id,
+                        market.event_id,
+                        market.kind.value,
+                        json.dumps([side.value for side in market.required_sides]),
+                        market.period,
+                        str(market.line) if market.line is not None else None,
+                        market.subject_id,
+                        market.stat_key,
+                        market.variant,
+                    )
+                    for market in markets.values()
+                ),
+            )
+            cursor.executemany(
+                "INSERT INTO outcomes(id, market_id, side) VALUES (%s, %s, %s) "
+                "ON CONFLICT(id) DO NOTHING",
+                (
+                    (outcome.id, outcome.market.id, outcome.side.value)
+                    for outcome in outcomes.values()
+                ),
+            )
+            cursor.executemany(
+                "INSERT INTO sportsbooks(id, name) VALUES (%s, %s) "
+                "ON CONFLICT(id) DO UPDATE SET name=excluded.name",
+                ((book.id, book.name) for book in sportsbooks.values()),
+            )
+            cursor.executemany(
+                "INSERT INTO quotes(provider_id, sportsbook_id, outcome_id, decimal_odds, "
+                "source_updated_at, observed_at, source_event_id, source_url) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT(provider_id, sportsbook_id, outcome_id, source_updated_at, "
+                "observed_at) DO NOTHING",
+                (
+                    (
+                        quote.provider_id,
+                        quote.sportsbook.id,
+                        quote.outcome.id,
+                        str(quote.decimal_odds),
+                        quote.source_updated_at.isoformat(),
+                        quote.observed_at.isoformat(),
+                        quote.source_event_id,
+                        quote.source_url,
+                    )
+                    for quote in quotes
+                ),
+            )
+            observed_at_values = tuple(
+                dict.fromkeys(quote.observed_at.isoformat() for quote in quotes)
+            )
+            if observed_at_values:
+                observed_placeholders = ", ".join("%s" for _ in observed_at_values)
+                cursor.execute(
+                    "INSERT INTO latest_quote_state(provider_id, sportsbook_id, outcome_id, "
+                    "quote_id) SELECT q.provider_id, q.sportsbook_id, q.outcome_id, MAX(q.id) "
+                    "FROM quotes q WHERE q.provider_id = %s "
+                    f"AND q.observed_at IN ({observed_placeholders}) "
+                    "GROUP BY q.provider_id, q.sportsbook_id, q.outcome_id "
+                    "ON CONFLICT(provider_id, sportsbook_id, outcome_id) "
+                    "DO UPDATE SET quote_id=excluded.quote_id",
+                    (snapshot.provider_id, *observed_at_values),
+                )
 
     @staticmethod
     def _clear_latest_scope(
@@ -260,73 +329,6 @@ class PostgresQuoteRepository:
             "SELECT o.id FROM outcomes o JOIN markets m ON m.id = o.market_id "
             f"WHERE m.event_id IN ({event_placeholders}){market_clause})",
             tuple(parameters),
-        )
-
-    @staticmethod
-    def _save_quote(cursor: Cursor[dict[str, Any]], quote: Quote) -> None:
-        market = quote.outcome.market
-        cursor.execute(
-            "INSERT INTO markets(id, event_id, kind, required_sides, period, line, subject_id, "
-            "stat_key, variant) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) "
-            "ON CONFLICT(id) DO NOTHING",
-            (
-                market.id,
-                market.event_id,
-                market.kind.value,
-                json.dumps([side.value for side in market.required_sides]),
-                market.period,
-                str(market.line) if market.line is not None else None,
-                market.subject_id,
-                market.stat_key,
-                market.variant,
-            ),
-        )
-        cursor.execute(
-            "INSERT INTO outcomes(id, market_id, side) VALUES (%s, %s, %s) "
-            "ON CONFLICT(id) DO NOTHING",
-            (quote.outcome.id, market.id, quote.outcome.side.value),
-        )
-        cursor.execute(
-            "INSERT INTO sportsbooks(id, name) VALUES (%s, %s) "
-            "ON CONFLICT(id) DO UPDATE SET name=excluded.name",
-            (quote.sportsbook.id, quote.sportsbook.name),
-        )
-        cursor.execute(
-            "INSERT INTO quotes(provider_id, sportsbook_id, outcome_id, decimal_odds, "
-            "source_updated_at, observed_at, source_event_id, source_url) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
-            "ON CONFLICT(provider_id, sportsbook_id, outcome_id, source_updated_at, observed_at) "
-            "DO NOTHING",
-            (
-                quote.provider_id,
-                quote.sportsbook.id,
-                quote.outcome.id,
-                str(quote.decimal_odds),
-                quote.source_updated_at.isoformat(),
-                quote.observed_at.isoformat(),
-                quote.source_event_id,
-                quote.source_url,
-            ),
-        )
-        cursor.execute(
-            "SELECT id FROM quotes WHERE provider_id = %s AND sportsbook_id = %s "
-            "AND outcome_id = %s AND source_updated_at = %s AND observed_at = %s",
-            (
-                quote.provider_id,
-                quote.sportsbook.id,
-                quote.outcome.id,
-                quote.source_updated_at.isoformat(),
-                quote.observed_at.isoformat(),
-            ),
-        )
-        quote_row = cursor.fetchone()
-        if quote_row is None:
-            raise RuntimeError("Failed to persist quote state")
-        cursor.execute(
-            "INSERT INTO latest_quote_state(provider_id, sportsbook_id, outcome_id, quote_id) "
-            "VALUES (%s, %s, %s, %s) ON CONFLICT(provider_id, sportsbook_id, outcome_id) "
-            "DO UPDATE SET quote_id=excluded.quote_id",
-            (quote.provider_id, quote.sportsbook.id, quote.outcome.id, int(quote_row["id"])),
         )
 
     def load_quotes_since(self, since: datetime) -> tuple[Quote, ...]:
