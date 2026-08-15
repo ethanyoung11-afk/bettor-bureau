@@ -22,7 +22,9 @@ import streamlit as st
 from odds_scanner.analytics import (
     MiddleOpportunity,
     ValueOpportunity,
-    detect_consensus_value,
+    audit_consensus_value,
+    best_value_by_outcome,
+    opportunities_from_value_audit,
 )
 from odds_scanner.domain import (
     ArbitrageOpportunity,
@@ -2894,35 +2896,6 @@ def _render_ev_filter_bar(
     )
 
 
-def _best_value_by_outcome(
-    values: tuple[ValueOpportunity, ...],
-) -> tuple[ValueOpportunity, ...]:
-    selected: dict[str, ValueOpportunity] = {}
-    for item in values:
-        outcome_id = item.quote.outcome.id
-        current = selected.get(outcome_id)
-        if current is None or (
-            item.quote.decimal_odds,
-            item.expected_value,
-            item.quote.source_updated_at,
-        ) > (
-            current.quote.decimal_odds,
-            current.expected_value,
-            current.quote.source_updated_at,
-        ):
-            selected[outcome_id] = item
-    return tuple(selected.values())
-
-
-def _values_for_selected_sportsbooks(
-    values: tuple[ValueOpportunity, ...],
-    sportsbooks: tuple[str, ...],
-) -> tuple[ValueOpportunity, ...]:
-    """Restrict every displayed opportunity to sportsbooks the user can access."""
-    selected = {sportsbook.casefold() for sportsbook in sportsbooks}
-    return tuple(item for item in values if item.quote.sportsbook.name.casefold() in selected)
-
-
 def _filter_value_opportunities(
     values: tuple[ValueOpportunity, ...],
     event_map: dict[str, Event],
@@ -2932,7 +2905,7 @@ def _filter_value_opportunities(
     max_age: timedelta,
 ) -> tuple[ValueOpportunity, ...]:
     filtered: list[ValueOpportunity] = []
-    for item in _best_value_by_outcome(values):
+    for item in best_value_by_outcome(values):
         event = event_map.get(item.quote.outcome.market.event_id)
         if event is None:
             continue
@@ -4300,26 +4273,26 @@ def run() -> None:
             repository,
             persist_preferences=is_admin,
         )
-        market_values = detect_consensus_value(
+        value_audit = audit_consensus_value(
             quotes,
             as_of=as_of,
             max_age=controls["freshness"],
-            minimum_ev=Decimal("0"),
+            candidate_sportsbooks=ev_filters.my_books,
             include_stale=True,
         )
-        selected_book_values = _values_for_selected_sportsbooks(
-            market_values,
-            ev_filters.my_books,
+        market_values = opportunities_from_value_audit(
+            value_audit,
+            minimum_ev=Decimal("0"),
         )
         recommendation_values = _filter_value_opportunities(
-            selected_book_values,
+            market_values,
             event_map,
             ev_filters,
             as_of=as_of,
             max_age=controls["freshness"],
         )
         all_filtered_values = _filter_value_opportunities(
-            selected_book_values,
+            market_values,
             event_map,
             _without_recommendation_probability_screen(ev_filters),
             as_of=as_of,

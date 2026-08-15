@@ -47,6 +47,30 @@ class ValueOpportunity:
 
 
 @dataclass(frozen=True, slots=True)
+class ValuePriceAudit:
+    """The consensus evaluation result for one sportsbook price."""
+
+    quote: Quote
+    fair_probability: Decimal | None
+    expected_value: Decimal | None
+    reference_books: int
+    reference_sportsbooks: tuple[str, ...]
+    exclusion_reason: str | None = None
+
+    @property
+    def opportunity(self) -> ValueOpportunity | None:
+        if self.fair_probability is None or self.expected_value is None:
+            return None
+        return ValueOpportunity(
+            quote=self.quote,
+            fair_probability=self.fair_probability,
+            expected_value=self.expected_value,
+            reference_books=self.reference_books,
+            reference_sportsbooks=self.reference_sportsbooks,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class Recommendation:
     opportunity_type: str
     event_id: str
@@ -257,18 +281,19 @@ def detect_middles(
     return tuple(sorted(results, key=lambda item: item.width, reverse=True))
 
 
-def detect_consensus_value(
+def audit_consensus_value(
     quotes: Iterable[Quote],
     *,
     as_of: datetime,
     max_age: timedelta,
-    minimum_ev: Decimal = Decimal("0.01"),
     candidate_sportsbooks: Iterable[str] | None = None,
     include_stale: bool = False,
-) -> tuple[ValueOpportunity, ...]:
+) -> tuple[ValuePriceAudit, ...]:
+    """Evaluate every candidate price or record why consensus could not evaluate it."""
+    deduplicated = deduplicate_quotes(quotes)
     eligible = tuple(
         quote
-        for quote in deduplicate_quotes(quotes)
+        for quote in deduplicated
         if include_stale or is_fresh(quote, as_of=as_of, max_age=max_age)
     )
     markets: dict[str, list[Quote]] = defaultdict(list)
@@ -280,8 +305,31 @@ def detect_consensus_value(
         if candidate_sportsbooks is None
         else {name.casefold() for name in candidate_sportsbooks}
     )
-    results: list[ValueOpportunity] = []
-    for group in markets.values():
+    candidate_quotes = tuple(
+        quote
+        for quote in deduplicated
+        if candidate_names is None or quote.sportsbook.name.casefold() in candidate_names
+    )
+    candidates_by_market: dict[str, list[Quote]] = defaultdict(list)
+    for quote in candidate_quotes:
+        candidates_by_market[quote.outcome.market.id].append(quote)
+
+    results: list[ValuePriceAudit] = []
+    for market_id, candidates in candidates_by_market.items():
+        group = markets.get(market_id, [])
+        if not group:
+            results.extend(
+                ValuePriceAudit(
+                    quote=candidate,
+                    fair_probability=None,
+                    expected_value=None,
+                    reference_books=0,
+                    reference_sportsbooks=(),
+                    exclusion_reason="stale_price",
+                )
+                for candidate in candidates
+            )
+            continue
         by_book: dict[str, dict[OutcomeSide, Quote]] = defaultdict(dict)
         for quote in group:
             by_book[quote.sportsbook.id][quote.outcome.side] = quote
@@ -291,8 +339,6 @@ def detect_consensus_value(
             for book_id, side_quotes in by_book.items()
             if all(side in side_quotes for side in required_sides)
         }
-        if len(complete_books) < 2:
-            continue
 
         fair_by_book: dict[str, dict[OutcomeSide, Decimal]] = {}
         for book_id, side_quotes in complete_books.items():
@@ -304,11 +350,19 @@ def detect_consensus_value(
                 side: probability / overround for side, probability in raw.items()
             }
 
-        for candidate in group:
-            if (
-                candidate_names is not None
-                and candidate.sportsbook.name.casefold() not in candidate_names
-            ):
+        eligible_quotes = set(group)
+        for candidate in candidates:
+            if candidate not in eligible_quotes:
+                results.append(
+                    ValuePriceAudit(
+                        quote=candidate,
+                        fair_probability=None,
+                        expected_value=None,
+                        reference_books=0,
+                        reference_sportsbooks=(),
+                        exclusion_reason="stale_price",
+                    )
+                )
                 continue
             consensus = [
                 (book_id, fair[candidate.outcome.side])
@@ -316,25 +370,95 @@ def detect_consensus_value(
                 if book_id != candidate.sportsbook.id
             ]
             if len(consensus) < 2:
+                results.append(
+                    ValuePriceAudit(
+                        quote=candidate,
+                        fair_probability=None,
+                        expected_value=None,
+                        reference_books=len(consensus),
+                        reference_sportsbooks=tuple(
+                            sorted(
+                                complete_books[book_id][required_sides[0]].sportsbook.name
+                                for book_id, _ in consensus
+                            )
+                        ),
+                        exclusion_reason="fewer_than_two_consensus_books",
+                    )
+                )
                 continue
             fair_probability = sum(
                 (probability for _, probability in consensus), Decimal("0")
             ) / Decimal(len(consensus))
             expected_value = fair_probability * candidate.decimal_odds - Decimal("1")
-            if expected_value >= minimum_ev:
-                consensus_names = tuple(
-                    sorted(
-                        complete_books[book_id][required_sides[0]].sportsbook.name
-                        for book_id, _ in consensus
-                    )
+            consensus_names = tuple(
+                sorted(
+                    complete_books[book_id][required_sides[0]].sportsbook.name
+                    for book_id, _ in consensus
                 )
-                results.append(
-                    ValueOpportunity(
-                        quote=candidate,
-                        fair_probability=fair_probability,
-                        expected_value=expected_value,
-                        reference_books=len(consensus),
-                        reference_sportsbooks=consensus_names,
-                    )
+            )
+            results.append(
+                ValuePriceAudit(
+                    quote=candidate,
+                    fair_probability=fair_probability,
+                    expected_value=expected_value,
+                    reference_books=len(consensus),
+                    reference_sportsbooks=consensus_names,
                 )
+            )
+    return tuple(results)
+
+
+def opportunities_from_value_audit(
+    evaluations: Iterable[ValuePriceAudit],
+    *,
+    minimum_ev: Decimal = Decimal("0.01"),
+) -> tuple[ValueOpportunity, ...]:
+    results = tuple(
+        opportunity
+        for evaluation in evaluations
+        if (opportunity := evaluation.opportunity) is not None
+        and opportunity.expected_value >= minimum_ev
+    )
     return tuple(sorted(results, key=lambda item: item.expected_value, reverse=True))
+
+
+def best_value_by_outcome(
+    values: Iterable[ValueOpportunity],
+) -> tuple[ValueOpportunity, ...]:
+    """Keep the best accessible price for each distinct betting selection."""
+    selected: dict[str, ValueOpportunity] = {}
+    for item in values:
+        outcome_id = item.quote.outcome.id
+        current = selected.get(outcome_id)
+        if current is None or (
+            item.quote.decimal_odds,
+            item.expected_value,
+            item.quote.source_updated_at,
+        ) > (
+            current.quote.decimal_odds,
+            current.expected_value,
+            current.quote.source_updated_at,
+        ):
+            selected[outcome_id] = item
+    return tuple(selected.values())
+
+
+def detect_consensus_value(
+    quotes: Iterable[Quote],
+    *,
+    as_of: datetime,
+    max_age: timedelta,
+    minimum_ev: Decimal = Decimal("0.01"),
+    candidate_sportsbooks: Iterable[str] | None = None,
+    include_stale: bool = False,
+) -> tuple[ValueOpportunity, ...]:
+    return opportunities_from_value_audit(
+        audit_consensus_value(
+            quotes,
+            as_of=as_of,
+            max_age=max_age,
+            candidate_sportsbooks=candidate_sportsbooks,
+            include_stale=include_stale,
+        ),
+        minimum_ev=minimum_ev,
+    )

@@ -28,3 +28,7 @@ jobs:
           ODDSPAPI_MONTHLY_CREDIT_LIMIT: ${{ vars.ODDSPAPI_MONTHLY_CREDIT_LIMIT || '250' }}
           ODDSPAPI_MONTHLY_CREDIT_RESERVE: ${{ vars.ODDSPAPI_MONTHLY_CREDIT_RESERVE || '25' }}
         run: python -m odds_scanner.live_refresh
+      - name: Audit every current price for +EV coverage
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python -m odds_scanner.ev_audit

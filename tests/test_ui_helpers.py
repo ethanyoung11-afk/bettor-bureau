@@ -2,7 +2,7 @@ from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal
 
-from odds_scanner.analytics import detect_consensus_value
+from odds_scanner.analytics import best_value_by_outcome, detect_consensus_value
 from odds_scanner.opportunities import deduplicate_quotes, implied_probability
 from odds_scanner.presentation import decimal_to_american
 from odds_scanner.providers.demo import generate_demo_snapshots
@@ -16,7 +16,6 @@ from odds_scanner.ui import (
     SPORTSBOOK_URLS,
     STARTER_BOOKS,
     EVFilterState,
-    _best_value_by_outcome,
     _board_header_markup,
     _decode_sportsbook_preferences,
     _event_odds_frame,
@@ -36,7 +35,6 @@ from odds_scanner.ui import (
     _sportsbook_default_enabled,
     _sportsbook_event_url,
     _value_comparison_markup,
-    _values_for_selected_sportsbooks,
     _without_recommendation_probability_screen,
 )
 
@@ -45,24 +43,6 @@ def test_strategy_money_is_dollar_first():
     assert _format_strategy_dollars(Decimal("2.50")) == "+$250"
     assert _format_strategy_dollars(Decimal("-1.25")) == "-$125"
     assert _format_strategy_dollars(Decimal("0")) == "+$0"
-
-
-def test_sportsbook_preferences_narrow_every_displayed_opportunity(now):
-    snapshot = generate_demo_snapshots(now)[-1]
-    market_values = detect_consensus_value(
-        snapshot.quotes,
-        as_of=now,
-        max_age=timedelta(days=1),
-        minimum_ev=Decimal("0"),
-        include_stale=True,
-    )
-
-    personalized = _values_for_selected_sportsbooks(market_values, ("Betway",))
-
-    assert personalized
-    assert len(personalized) < len(market_values)
-    assert {item.quote.sportsbook.name for item in personalized} == {"Betway"}
-    assert _values_for_selected_sportsbooks(market_values, ()) == ()
 
 
 def test_board_tooltips_are_exclusive_and_default_books_are_target_books():
@@ -261,7 +241,7 @@ def test_ev_board_keeps_one_best_offer_per_bet_and_filters_implied_probability(n
     assert tuple(item.expected_value for item in filtered) == tuple(
         sorted((item.expected_value for item in filtered), reverse=True)
     )
-    assert len(_best_value_by_outcome(values)) <= len(values)
+    assert len(best_value_by_outcome(values)) <= len(values)
 
 
 def test_more_ev_keeps_shared_filters_but_does_not_hide_longshots(now):

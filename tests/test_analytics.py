@@ -4,8 +4,11 @@ from datetime import timedelta
 from decimal import Decimal
 
 from odds_scanner.analytics import (
+    audit_consensus_value,
+    best_value_by_outcome,
     detect_consensus_value,
     detect_middles,
+    opportunities_from_value_audit,
     plan_refreshes,
     rank_recommendations,
 )
@@ -21,8 +24,7 @@ def test_demo_feed_exercises_complete_product(now):
     assert len(snapshots[-1].events) == 6
     assert len(snapshots[-1].quotes) == 336
     assert any(
-        quote.outcome.market.kind is MarketKind.PLAYER_PROP
-        for quote in snapshots[-1].quotes
+        quote.outcome.market.kind is MarketKind.PLAYER_PROP for quote in snapshots[-1].quotes
     )
     assert {quote.sportsbook.id for quote in snapshots[-1].quotes} == {
         "draftkings",
@@ -115,6 +117,71 @@ def test_personal_book_filter_does_not_limit_consensus_books(now):
     assert all("PlayNow" not in item.reference_sportsbooks for item in values)
 
 
+def test_value_audit_covers_every_selected_sportsbook_price(now):
+    current = deduplicate_quotes(
+        quote for snapshot in generate_demo_snapshots(now) for quote in snapshot.quotes
+    )
+    selected_books = {"PlayNow", "Betway"}
+
+    audit = audit_consensus_value(
+        current,
+        as_of=now,
+        max_age=timedelta(minutes=5),
+        candidate_sportsbooks=selected_books,
+        include_stale=True,
+    )
+    selected_quotes = tuple(
+        quote for quote in current if quote.sportsbook.name in selected_books
+    )
+
+    assert len(audit) == len(selected_quotes)
+    assert {item.quote for item in audit} == set(selected_quotes)
+    audited_values = opportunities_from_value_audit(audit, minimum_ev=Decimal("0.02"))
+    detected_values = detect_consensus_value(
+        current,
+        as_of=now,
+        max_age=timedelta(minutes=5),
+        minimum_ev=Decimal("0.02"),
+        candidate_sportsbooks=selected_books,
+        include_stale=True,
+    )
+    assert audited_values == detected_values
+    assert len(best_value_by_outcome(audited_values)) <= len(audited_values)
+
+
+def test_value_audit_catches_betway_side_of_cross_book_arb(now):
+    market = make_market()
+    quotes = tuple(
+        quote
+        for book, home, away in (
+            ("betway", "3.75", "1.285714"),
+            ("betrivers", "3.05", "1.380228"),
+            ("book-a", "3.50", "1.309598"),
+            ("book-b", "3.60", "1.311526"),
+        )
+        for quote in (
+            make_quote(market, OutcomeSide.HOME, home, now, book=book),
+            make_quote(market, OutcomeSide.AWAY, away, now, book=book),
+        )
+    )
+
+    audit = audit_consensus_value(
+        quotes,
+        as_of=now,
+        max_age=timedelta(minutes=5),
+        candidate_sportsbooks=("Betway",),
+    )
+    qualifying = opportunities_from_value_audit(audit, minimum_ev=Decimal("0.02"))
+
+    assert len(audit) == 2
+    assert any(
+        item.quote.outcome.side is OutcomeSide.HOME
+        and item.quote.sportsbook.name == "Betway"
+        and item.expected_value > Decimal("0.02")
+        for item in qualifying
+    )
+
+
 def test_consensus_uses_every_complete_reference_book_except_the_candidate(now):
     market = make_market()
     quotes = tuple(
@@ -141,10 +208,7 @@ def test_consensus_uses_every_complete_reference_book_except_the_candidate(now):
 
     assert values
     assert all(item.reference_books == 3 for item in values)
-    assert all(
-        item.reference_sportsbooks == ("Book-B", "Book-C", "Book-D")
-        for item in values
-    )
+    assert all(item.reference_sportsbooks == ("Book-B", "Book-C", "Book-D") for item in values)
 
 
 def test_consensus_value_can_include_stale_quotes_when_requested(now):
