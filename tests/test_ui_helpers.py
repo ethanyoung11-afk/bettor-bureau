@@ -10,6 +10,7 @@ from odds_scanner.providers.demo import generate_demo_snapshots
 from odds_scanner.strategy import OFFICIAL_RECOMMENDATION_PREFIX
 from odds_scanner.ui import (
     CORE_REFRESH_LEAGUES,
+    DEFAULT_ODDS_FORMAT,
     RECOMMENDED_MAXIMUM_AMERICAN_ODDS,
     RECOMMENDED_MINIMUM_AMERICAN_ODDS,
     RECOMMENDED_MINIMUM_EV,
@@ -45,6 +46,10 @@ def test_strategy_money_is_dollar_first():
     assert _format_strategy_dollars(Decimal("2.50")) == "+$250"
     assert _format_strategy_dollars(Decimal("-1.25")) == "-$125"
     assert _format_strategy_dollars(Decimal("0")) == "+$0"
+
+
+def test_decimal_odds_are_the_default_display_format():
+    assert DEFAULT_ODDS_FORMAT == "Decimal"
 
 
 def test_official_bankroll_history_uses_settlement_time_and_dollars(now):

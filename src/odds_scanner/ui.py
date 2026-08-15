@@ -162,6 +162,7 @@ LEAGUE_SPORTS = {
 }
 CORE_REFRESH_LEAGUES = ("NFL", "NCAAF", "CFL", "NBA", "NHL")
 DISPLAY_TIMEZONE = ZoneInfo("America/Vancouver")
+DEFAULT_ODDS_FORMAT = "Decimal"
 SCHEDULE_REFRESH_INTERVAL = timedelta(days=7)
 RECOMMENDED_MINIMUM_EV = OFFICIAL_MINIMUM_EV
 RECOMMENDED_MINIMUM_IMPLIED_PROBABILITY = OFFICIAL_MINIMUM_BREAK_EVEN_PROBABILITY
@@ -1532,7 +1533,7 @@ def _render_page_header() -> Any:
         with format_column, st.container(key="header_odds_format"):
             decimal_odds = st.toggle(
                 "Decimal odds",
-                value=st.session_state.get("odds_format", "American") == "Decimal",
+                value=st.session_state.get("odds_format", DEFAULT_ODDS_FORMAT) == "Decimal",
                 key="decimal_odds",
                 help="Switch off for American odds.",
             )
@@ -1748,7 +1749,7 @@ def _load_defaults(repository: QuoteRepository) -> None:
     st.session_state.setdefault("freshness_minutes", int(stored.get("freshness_minutes", "5")))
     st.session_state.setdefault("min_roi", float(stored.get("min_roi", "0.25")))
     st.session_state.setdefault("min_ev", float(stored.get("min_ev", "2.0")))
-    st.session_state.setdefault("odds_format", "American")
+    st.session_state.setdefault("odds_format", DEFAULT_ODDS_FORMAT)
     st.session_state["terminal_defaults_loaded"] = True
 
 
@@ -1842,7 +1843,7 @@ def _sidebar(
                 step=0.1,
                 key="min_roi",
             )
-            odds_format = str(st.session_state.get("odds_format", "American"))
+            odds_format = str(st.session_state.get("odds_format", DEFAULT_ODDS_FORMAT))
         supported_leagues = list(LEAGUE_ICONS)
         supported_markets = ["Moneyline", "Spread", "Total"]
         if data_mode in {"Demo", "OddsPapi Free"}:
@@ -4381,7 +4382,7 @@ def run() -> None:
     header_odds_status = _render_page_header()
     owner_refresh = bool(st.session_state.pop("owner_refresh_requested", False))
     controls["refresh"] = bool(controls["refresh"] or owner_refresh)
-    controls["odds_format"] = str(st.session_state.get("odds_format", "American"))
+    controls["odds_format"] = str(st.session_state.get("odds_format", DEFAULT_ODDS_FORMAT))
 
     refresh_notice = st.session_state.pop("refresh_notice", None)
     if refresh_notice:
