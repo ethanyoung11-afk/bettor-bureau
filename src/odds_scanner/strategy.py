@@ -22,7 +22,6 @@ from odds_scanner.storage.base import QuoteRepository
 
 OFFICIAL_STRATEGY_KEY = "balanced-quarter-kelly-v1"
 OFFICIAL_RECOMMENDATION_PREFIX = "official-recommendation:"
-OFFICIAL_TARGET_SPORTSBOOKS = ("PlayNow", "Betway")
 OFFICIAL_STARTING_BANKROLL_UNITS = Decimal("100")
 OFFICIAL_UNIT_VALUE_DOLLARS = Decimal("100")
 OFFICIAL_MINIMUM_EV = Decimal("0.02")
@@ -215,18 +214,25 @@ def _selection_label(quote: Quote, event: Event) -> str:
     return selection
 
 
-def _recommendation_note(recommendation: OfficialRecommendation) -> str:
+def _recommendation_id(recommendation: OfficialRecommendation) -> str:
     opportunity = recommendation.opportunity
-    event_id = opportunity.quote.outcome.market.event_id
-    recommendation_id = stable_id(
+    return stable_id(
         "official-recommendation",
         OFFICIAL_STRATEGY_KEY,
-        event_id,
+        opportunity.quote.outcome.market.event_id,
+        opportunity.quote.outcome.id,
+        opportunity.quote.sportsbook.id,
     )
+
+
+def _recommendation_note(recommendation: OfficialRecommendation) -> str:
+    opportunity = recommendation.opportunity
+    recommendation_id = _recommendation_id(recommendation)
     metadata = json.dumps(
         {
             "strategy": OFFICIAL_STRATEGY_KEY,
             "outcome_id": opportunity.quote.outcome.id,
+            "sportsbook_id": opportunity.quote.sportsbook.id,
             "expected_value": str(opportunity.expected_value),
             "fair_probability": str(opportunity.fair_probability),
             "reference_books": opportunity.reference_books,
@@ -260,7 +266,6 @@ def publish_official_recommendations(
         as_of=as_of,
         max_age=max_age,
         minimum_ev=Decimal("0"),
-        candidate_sportsbooks=OFFICIAL_TARGET_SPORTSBOOKS,
         include_stale=False,
     )
     current_bets = repository.list_bets()
@@ -271,12 +276,27 @@ def publish_official_recommendations(
         as_of=as_of,
         bankroll_units=current_bankroll,
     )
-    previously_recorded_events = {bet.event_id for bet in official_bets(current_bets)}
+    prior_official_bets = official_bets(current_bets)
+    recorded_ids = {
+        bet.notes.removeprefix(OFFICIAL_RECOMMENDATION_PREFIX).split("|", 1)[0]
+        for bet in prior_official_bets
+    }
+    legacy_event_ids = {
+        bet.event_id
+        for bet in prior_official_bets
+        if stable_id(
+            "official-recommendation",
+            OFFICIAL_STRATEGY_KEY,
+            bet.event_id,
+        )
+        in recorded_ids
+    }
     published: list[TrackedBet] = []
     for recommendation in slate:
         opportunity = recommendation.opportunity
         event = event_map[opportunity.quote.outcome.market.event_id]
-        if event.id in previously_recorded_events:
+        recommendation_id = _recommendation_id(recommendation)
+        if recommendation_id in recorded_ids or event.id in legacy_event_ids:
             continue
         tracked = TrackedBet(
             id=None,
@@ -306,5 +326,5 @@ def publish_official_recommendations(
                 notes=tracked.notes,
             )
         )
-        previously_recorded_events.add(event.id)
+        recorded_ids.add(recommendation_id)
     return tuple(published)

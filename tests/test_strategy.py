@@ -186,6 +186,40 @@ def test_successful_refresh_publication_is_idempotent_and_keeps_strategy_metadat
     assert official_bankroll_units(repository.list_bets()) == Decimal("100")
 
 
+def test_official_publication_considers_every_available_sportsbook(tmp_path, now):
+    snapshot = _strategy_snapshot(now)
+    first_market = snapshot.quotes[0].outcome.market
+    global_book_quotes = (
+        _named_quote(
+            first_market,
+            first_market.required_sides[0],
+            "2.25",
+            now,
+            book_id="global-book",
+            book_name="Global Book",
+        ),
+        _named_quote(
+            first_market,
+            first_market.required_sides[1],
+            "1.75",
+            now,
+            book_id="global-book",
+            book_name="Global Book",
+        ),
+    )
+    repository = SQLiteQuoteRepository(tmp_path / "global-strategy.db")
+    repository.save_snapshot(replace(snapshot, quotes=(*snapshot.quotes, *global_book_quotes)))
+
+    published = publish_official_recommendations(
+        repository,
+        "provider",
+        as_of=now,
+        max_age=timedelta(minutes=30),
+    )
+
+    assert any(bet.sportsbook == "Global Book" for bet in published)
+
+
 def test_refresh_engine_automatically_publishes_the_official_slate(tmp_path, now):
     repository = SQLiteQuoteRepository(tmp_path / "refresh-strategy.db")
     provider = StrategySnapshotProvider(_strategy_snapshot(now))

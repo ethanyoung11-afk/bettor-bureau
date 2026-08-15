@@ -13,11 +13,14 @@ from functools import lru_cache
 from pathlib import Path
 from threading import Lock
 from typing import Any
+from urllib.parse import quote as url_quote
+from urllib.parse import unquote as url_unquote
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 from odds_scanner.analytics import (
     MiddleOpportunity,
@@ -2470,12 +2473,14 @@ def _sportsbook_toggle_key(mode: str, book: str) -> str:
     return f"my_sportsbook_{stable_id('ui-book-v4', mode, book)}"
 
 
-def _sportsbook_preferences_key(mode: str) -> str:
-    return f"sportsbook_preferences_{_provider_id(mode)}"
+def _sportsbook_preferences_cookie_name(mode: str) -> str:
+    provider = _provider_id(mode).replace("-", "_")
+    return f"bettor_bureau_sportsbooks_{provider}"
 
 
 def _sportsbook_default_enabled(book: str) -> bool:
-    return book in PRIORITY_BOOKS
+    _ = book
+    return True
 
 
 def _decode_sportsbook_preferences(
@@ -2485,7 +2490,7 @@ def _decode_sportsbook_preferences(
     if raw_value is None:
         return None
     try:
-        decoded = json.loads(raw_value)
+        decoded = json.loads(url_unquote(raw_value))
     except (TypeError, ValueError):
         return None
     if not isinstance(decoded, list) or not all(isinstance(book, str) for book in decoded):
@@ -2494,8 +2499,7 @@ def _decode_sportsbook_preferences(
     return tuple(book for book in available_books if book in selected)
 
 
-def _save_sportsbook_preferences(
-    repository: QuoteRepository,
+def _queue_sportsbook_preferences_cookie(
     books: tuple[str, ...],
     mode: str,
 ) -> None:
@@ -2504,26 +2508,36 @@ def _save_sportsbook_preferences(
         for book in books
         if bool(st.session_state.get(_sportsbook_toggle_key(mode, book), False))
     ]
-    repository.save_setting(
-        _sportsbook_preferences_key(mode),
+    st.session_state[
+        f"pending_{_sportsbook_preferences_cookie_name(mode)}"
+    ] = url_quote(
         json.dumps(selected, separators=(",", ":")),
+        safe="",
     )
-    _invalidate_repository_caches()
     _set_ev_page(0)
+
+
+def _render_pending_sportsbook_preferences_cookie(mode: str) -> None:
+    cookie_name = _sportsbook_preferences_cookie_name(mode)
+    pending_value = st.session_state.pop(f"pending_{cookie_name}", None)
+    if pending_value is None:
+        return
+    cookie = f"{cookie_name}={pending_value}; Max-Age=31536000; Path=/; SameSite=Lax"
+    components.html(
+        f"<script>document.cookie = {json.dumps(cookie)};</script>",
+        height=0,
+        width=0,
+    )
 
 
 def _set_sportsbook_selection(
     books: tuple[str, ...],
     mode: str,
     enabled: bool,
-    repository: QuoteRepository | None = None,
 ) -> None:
     for book in books:
         st.session_state[_sportsbook_toggle_key(mode, book)] = enabled
-    if repository is not None:
-        _save_sportsbook_preferences(repository, books, mode)
-    else:
-        _set_ev_page(0)
+    _queue_sportsbook_preferences_cookie(books, mode)
 
 
 def _reset_secondary_ev_filters() -> None:
@@ -2562,10 +2576,8 @@ def _render_ev_filter_bar(
     events: tuple[Event, ...],
     quotes: tuple[Quote, ...],
     as_of: datetime,
-    repository: QuoteRepository,
-    *,
-    persist_preferences: bool,
 ) -> EVFilterState:
+    _render_pending_sportsbook_preferences_cookie(mode)
     if not st.session_state.get("ev_reference_defaults_v5"):
         st.session_state["ev_implied_preset"] = "Any"
         st.session_state["ev_custom_implied"] = 0.0
@@ -2652,12 +2664,10 @@ def _render_ev_filter_bar(
             args=(0,),
         )
 
-        preference_session_key = (
-            f"sportsbook_preferences_loaded_{stable_id('sportsbook-preferences-v1', mode)}"
-        )
-        if persist_preferences and not st.session_state.get(preference_session_key):
+        preference_session_key = f"sportsbook_preferences_loaded_{stable_id('v2', mode)}"
+        if not st.session_state.get(preference_session_key):
             saved_books = _decode_sportsbook_preferences(
-                _cached_settings(repository).get(_sportsbook_preferences_key(mode)),
+                st.context.cookies.get(_sportsbook_preferences_cookie_name(mode)),
                 tuple(available_books),
             )
             for book in available_books:
@@ -2700,12 +2710,8 @@ def _render_ev_filter_bar(
                     "Apply sportsbooks",
                     type="primary",
                     width="stretch",
-                    on_click=(
-                        _save_sportsbook_preferences if persist_preferences else _set_ev_page
-                    ),
-                    args=(
-                        (repository, tuple(available_books), mode) if persist_preferences else (0,)
-                    ),
+                    on_click=_queue_sportsbook_preferences_cookie,
+                    args=(tuple(available_books), mode),
                 )
                 st.form_submit_button(
                     "Use all books",
@@ -2714,7 +2720,6 @@ def _render_ev_filter_bar(
                         tuple(available_books),
                         mode,
                         True,
-                        repository if persist_preferences else None,
                     ),
                     width="stretch",
                     help=(
@@ -2722,9 +2727,7 @@ def _render_ev_filter_bar(
                     ),
                 )
                 st.caption(
-                    "Selections are saved for your next visit."
-                    if persist_preferences
-                    else "Selections apply to this browser session."
+                    "Selections are saved in this browser for your next visit."
                 )
 
         with more_col.popover("More Filters", width="stretch"):
@@ -4077,8 +4080,9 @@ def _render_launch_disclosures(mode: str) -> None:
             "affiliate link, this product may receive compensation when you use it. Compensation "
             "does not change the calculation or ranking of opportunities. Unmarked links are not "
             "represented as affiliate relationships.</p>"
-            "<p><strong>Privacy.</strong> This build stores preferences and optional bet-tracker "
-            "entries in the product database. Never enter sportsbook passwords, payment details, "
+            "<p><strong>Privacy.</strong> Sportsbook preferences are stored in your browser. "
+            "Optional bet-tracker entries are stored in the product database. Never enter "
+            "sportsbook passwords, payment details, "
             "or other sensitive account credentials. A hosted service should publish complete "
             "Terms of Use and a Privacy Policy before collecting user accounts, analytics, or "
             "other personal information.</p>"
@@ -4270,8 +4274,6 @@ def run() -> None:
             events,
             quotes,
             as_of,
-            repository,
-            persist_preferences=is_admin,
         )
         value_audit = audit_consensus_value(
             quotes,

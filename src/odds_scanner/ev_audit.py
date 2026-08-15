@@ -15,14 +15,13 @@ from odds_scanner.live_refresh import repository_from_environment
 from odds_scanner.opportunities import deduplicate_quotes
 
 PROVIDER_ID = "oddspapi"
-DEFAULT_SELECTED_SPORTSBOOKS = ("PlayNow", "Betway")
 DEFAULT_MINIMUM_EV = Decimal("0.02")
 
 
-def _selected_sportsbooks() -> tuple[str, ...]:
+def _selected_sportsbooks(available_sportsbooks: tuple[str, ...]) -> tuple[str, ...]:
     configured = os.getenv("AUDIT_SPORTSBOOKS", "").strip()
     if not configured:
-        return DEFAULT_SELECTED_SPORTSBOOKS
+        return available_sportsbooks
     return tuple(dict.fromkeys(item.strip() for item in configured.split(",") if item.strip()))
 
 
@@ -52,7 +51,10 @@ def main() -> int:
     all_evaluated = opportunities_from_value_audit(audit, minimum_ev=Decimal("-1"))
     all_positive = opportunities_from_value_audit(audit, minimum_ev=Decimal("0"))
     all_qualifying = opportunities_from_value_audit(audit, minimum_ev=DEFAULT_MINIMUM_EV)
-    selected = {name.casefold() for name in _selected_sportsbooks()}
+    default_sportsbooks = _selected_sportsbooks(
+        tuple(sorted({quote.sportsbook.name for quote in quotes}))
+    )
+    selected = {name.casefold() for name in default_sportsbooks}
     selected_qualifying = tuple(
         item
         for item in all_qualifying
@@ -67,7 +69,7 @@ def main() -> int:
         "prices_with_consensus": len(all_evaluated),
         "positive_ev_prices": len(all_positive),
         "prices_at_or_above_2_percent": len(all_qualifying),
-        "default_selected_sportsbooks": list(_selected_sportsbooks()),
+        "default_selected_sportsbooks": list(default_sportsbooks),
         "default_displayed_selections": len(displayed),
         "excluded_reasons": dict(
             sorted(Counter(item.exclusion_reason or "evaluated" for item in audit).items())

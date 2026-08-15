@@ -34,6 +34,7 @@ from odds_scanner.ui import (
     _sportsbook_bet_url,
     _sportsbook_default_enabled,
     _sportsbook_event_url,
+    _sportsbook_preferences_cookie_name,
     _value_comparison_markup,
     _without_recommendation_probability_screen,
 )
@@ -45,13 +46,13 @@ def test_strategy_money_is_dollar_first():
     assert _format_strategy_dollars(Decimal("0")) == "+$0"
 
 
-def test_board_tooltips_are_exclusive_and_default_books_are_target_books():
+def test_board_tooltips_are_exclusive_and_every_book_is_enabled_by_default():
     header = _board_header_markup()
 
     assert header.count('name="board-tooltip"') == 4
     assert _sportsbook_default_enabled("PlayNow")
     assert _sportsbook_default_enabled("Betway")
-    assert not _sportsbook_default_enabled("Pinnacle")
+    assert _sportsbook_default_enabled("Pinnacle")
 
 
 def test_event_odds_frame_keeps_book_columns_and_marks_best_prices(now):
@@ -174,7 +175,12 @@ def test_saved_sportsbook_preferences_restore_only_available_books():
         available,
     ) == ("PlayNow", "Pinnacle")
     assert _decode_sportsbook_preferences("[]", available) == ()
+    assert _decode_sportsbook_preferences(
+        "%5B%22Betway%22%2C%22PlayNow%22%5D",
+        available,
+    ) == ("PlayNow", "Betway")
     assert _decode_sportsbook_preferences("not-json", available) is None
+    assert _sportsbook_preferences_cookie_name("OddsPapi Free").startswith("bettor_bureau_")
 
 
 def test_bet_now_prefers_a_verified_event_deep_link(now):
