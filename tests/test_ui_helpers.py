@@ -23,6 +23,7 @@ from odds_scanner.ui import (
     _event_team_names,
     _exclude_recommended_opportunities,
     _filter_value_opportunities,
+    _format_strategy_dollars,
     _game_event_markup,
     _game_market_sections_markup,
     _market_label,
@@ -37,6 +38,12 @@ from odds_scanner.ui import (
     _value_comparison_markup,
     _without_recommendation_probability_screen,
 )
+
+
+def test_strategy_money_is_dollar_first():
+    assert _format_strategy_dollars(Decimal("2.50")) == "+$250"
+    assert _format_strategy_dollars(Decimal("-1.25")) == "-$125"
+    assert _format_strategy_dollars(Decimal("0")) == "+$0"
 
 
 def test_board_tooltips_are_exclusive_and_default_books_are_target_books():

@@ -3803,6 +3803,12 @@ def _render_line_movement(history: tuple[Quote, ...], events: tuple[Event, ...])
     st.caption(f"Showing {len(frame):,} stored observations across {series_count} series.")
 
 
+def _format_strategy_dollars(units: Decimal) -> str:
+    dollars = units * OFFICIAL_UNIT_VALUE_DOLLARS
+    sign = "+" if dollars >= 0 else "-"
+    return f"{sign}${abs(dollars):,.0f}"
+
+
 def _render_official_performance(
     repository: QuoteRepository,
     odds_format: str,
@@ -3813,19 +3819,23 @@ def _render_official_performance(
         heading_column, note_column = st.columns(
             [2.2, 5], vertical_alignment="bottom"
         )
-        heading_column.markdown("### Official Track Record")
+        heading_column.markdown("### The $10,000 Strategy")
         note_column.caption(
-            "Official paper bets published automatically after each successful odds refresh."
+            "Hypothetical paper bankroll tracking every official recommendation."
         )
-        record_column, units_column, roi_column, bankroll_column, pending_column = st.columns(5)
+        record_column, profit_column, roi_column, bankroll_column, pending_column = st.columns(5)
         record_column.metric("Record", f"{performance.wins}-{performance.losses}")
-        units_column.metric("Units", f"{performance.units:+.2f}u")
+        profit_column.metric(
+            "Profit / Loss",
+            _format_strategy_dollars(performance.units),
+            f"{performance.units:+.2f} units",
+        )
         roi_column.metric("ROI", f"{performance.roi:+.1%}")
         bankroll_column.metric(
             "Bankroll",
             f"${performance.bankroll * OFFICIAL_UNIT_VALUE_DOLLARS:,.0f}",
         )
-        pending_column.metric("Pending", performance.pending)
+        pending_column.metric("Open bets", performance.pending)
         st.caption(
             "$10,000 starting bankroll · quarter-Kelly sizing · $25–$100 per pick · "
             "up to three picks per refresh · one pick per event"
@@ -3850,12 +3860,13 @@ def _render_official_performance(
                     "Book": bet.sportsbook,
                     "Odds": format_odds(bet.decimal_odds, odds_format),
                     "Wager": (
-                        f"{bet.stake:.2f}u "
-                        f"(${bet.stake * OFFICIAL_UNIT_VALUE_DOLLARS:,.0f})"
+                        f"${bet.stake * OFFICIAL_UNIT_VALUE_DOLLARS:,.0f} "
+                        f"({bet.stake:.2f}u)"
                     ),
                     "Result": bet.status.value.title(),
-                    "Units": (
-                        f"{bet.profit_loss:+.2f}u"
+                    "P/L": (
+                        f"{_format_strategy_dollars(bet.profit_loss)} "
+                        f"({bet.profit_loss:+.2f}u)"
                         if bet.profit_loss is not None
                         else "—"
                     ),
