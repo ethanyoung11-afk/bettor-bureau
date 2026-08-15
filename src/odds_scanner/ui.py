@@ -13,12 +13,10 @@ from functools import lru_cache
 from pathlib import Path
 from threading import Lock
 from typing import Any
-from urllib.parse import quote as url_quote
 from urllib.parse import unquote as url_unquote
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
-import extra_streamlit_components as stx
 import pandas as pd
 import streamlit as st
 
@@ -2473,13 +2471,54 @@ def _sportsbook_toggle_key(mode: str, book: str) -> str:
     return f"my_sportsbook_{stable_id('ui-book-v4', mode, book)}"
 
 
-def _sportsbook_preferences_cookie_name(mode: str) -> str:
+_SPORTSBOOK_PREFERENCES_COMPONENT = st.components.v2.component(
+    "sportsbook_preferences_storage",
+    html='<span class="sportsbook-preferences-storage" aria-hidden="true"></span>',
+    css=".sportsbook-preferences-storage { display: none; }",
+    js="""
+    export default function({ data, setStateValue }) {
+        const storageKey = data.storageKey;
+        const fallback = Array.isArray(data.defaultSelected)
+            ? data.defaultSelected
+            : [];
+        let selected = fallback;
+
+        try {
+            if (Array.isArray(data.writeSelected)) {
+                selected = data.writeSelected;
+                localStorage.setItem(storageKey, JSON.stringify(selected));
+            } else {
+                const stored = localStorage.getItem(storageKey);
+                if (stored === null) {
+                    localStorage.setItem(storageKey, JSON.stringify(fallback));
+                } else {
+                    const parsed = JSON.parse(stored);
+                    if (
+                        Array.isArray(parsed)
+                        && parsed.every((book) => typeof book === "string")
+                    ) {
+                        selected = parsed;
+                    }
+                }
+            }
+        } catch (_error) {
+            selected = fallback;
+        }
+
+        setStateValue("selected", selected);
+        setStateValue("ready", true);
+    }
+    """,
+)
+
+
+def _sportsbook_preferences_storage_key(mode: str) -> str:
     provider = _provider_id(mode).replace("-", "_")
     return f"bettor_bureau_sportsbooks_{provider}"
 
 
 def _sportsbook_preferences_loaded_key(mode: str) -> str:
-    return f"sportsbook_preferences_loaded_{stable_id('browser-cookie-v1', mode)}"
+    return f"sportsbook_preferences_loaded_{stable_id('browser-storage-v1', mode)}"
 
 
 def _sportsbook_default_enabled(book: str) -> bool:
@@ -2488,22 +2527,25 @@ def _sportsbook_default_enabled(book: str) -> bool:
 
 
 def _decode_sportsbook_preferences(
-    raw_value: str | None,
+    raw_value: str | list[str] | tuple[str, ...] | None,
     available_books: tuple[str, ...],
 ) -> tuple[str, ...] | None:
     if raw_value is None:
         return None
-    try:
-        decoded = json.loads(url_unquote(raw_value))
-    except (TypeError, ValueError):
-        return None
+    if isinstance(raw_value, str):
+        try:
+            decoded = json.loads(url_unquote(raw_value))
+        except (TypeError, ValueError):
+            return None
+    else:
+        decoded = list(raw_value)
     if not isinstance(decoded, list) or not all(isinstance(book, str) for book in decoded):
         return None
     selected = set(decoded)
     return tuple(book for book in available_books if book in selected)
 
 
-def _queue_sportsbook_preferences_cookie(
+def _queue_sportsbook_preferences_storage(
     books: tuple[str, ...],
     mode: str,
 ) -> None:
@@ -2512,34 +2554,34 @@ def _queue_sportsbook_preferences_cookie(
         for book in books
         if bool(st.session_state.get(_sportsbook_toggle_key(mode, book), False))
     ]
-    st.session_state[
-        f"pending_{_sportsbook_preferences_cookie_name(mode)}"
-    ] = url_quote(
-        json.dumps(selected, separators=(",", ":")),
-        safe="",
-    )
+    storage_key = _sportsbook_preferences_storage_key(mode)
+    st.session_state[f"pending_{storage_key}"] = selected
     st.session_state[_sportsbook_preferences_loaded_key(mode)] = True
     _set_ev_page(0)
 
 
-def _render_pending_sportsbook_preferences_cookie(
+def _render_sportsbook_preferences_storage(
     mode: str,
-    cookie_manager: Any,
-) -> None:
-    cookie_name = _sportsbook_preferences_cookie_name(mode)
-    pending_value = st.session_state.pop(f"pending_{cookie_name}", None)
-    if pending_value is None:
-        return
-    cookie_manager.set(
-        cookie_name,
-        pending_value,
-        expires_at=datetime.now(UTC) + timedelta(days=365),
-        key=f"set_{cookie_name}_{stable_id('cookie-value', pending_value)}",
+    available_books: tuple[str, ...],
+) -> tuple[str, ...] | None:
+    storage_key = _sportsbook_preferences_storage_key(mode)
+    pending_value = st.session_state.pop(f"pending_{storage_key}", None)
+    result = _SPORTSBOOK_PREFERENCES_COMPONENT(
+        data={
+            "storageKey": storage_key,
+            "defaultSelected": list(available_books),
+            "writeSelected": pending_value,
+        },
+        default={"selected": list(available_books), "ready": False},
+        on_selected_change=lambda: None,
+        on_ready_change=lambda: None,
+        key=f"sportsbook_preferences_{stable_id('browser-storage-v1', mode)}",
+        width=0,
+        height=0,
     )
-
-
-def _sportsbook_cookie_manager() -> Any:
-    return stx.CookieManager(key="bettor_bureau_sportsbook_preferences")
+    if not result.ready:
+        return None
+    return _decode_sportsbook_preferences(result.selected, available_books)
 
 
 def _set_sportsbook_selection(
@@ -2549,7 +2591,7 @@ def _set_sportsbook_selection(
 ) -> None:
     for book in books:
         st.session_state[_sportsbook_toggle_key(mode, book)] = enabled
-    _queue_sportsbook_preferences_cookie(books, mode)
+    _queue_sportsbook_preferences_storage(books, mode)
 
 
 def _reset_secondary_ev_filters() -> None:
@@ -2589,8 +2631,10 @@ def _render_ev_filter_bar(
     quotes: tuple[Quote, ...],
     as_of: datetime,
 ) -> EVFilterState:
-    cookie_manager = _sportsbook_cookie_manager()
-    _render_pending_sportsbook_preferences_cookie(mode, cookie_manager)
+    stored_sportsbooks = _render_sportsbook_preferences_storage(
+        mode,
+        tuple(available_books),
+    )
     if not st.session_state.get("ev_reference_defaults_v5"):
         st.session_state["ev_implied_preset"] = "Any"
         st.session_state["ev_custom_implied"] = 0.0
@@ -2679,13 +2723,11 @@ def _render_ev_filter_bar(
 
         preference_session_key = _sportsbook_preferences_loaded_key(mode)
         if not st.session_state.get(preference_session_key):
-            saved_books = _decode_sportsbook_preferences(
-                cookie_manager.get(_sportsbook_preferences_cookie_name(mode)),
-                tuple(available_books),
-            )
-            if saved_books is not None:
+            if stored_sportsbooks is not None:
                 for book in available_books:
-                    st.session_state[_sportsbook_toggle_key(mode, book)] = book in saved_books
+                    st.session_state[_sportsbook_toggle_key(mode, book)] = (
+                        book in stored_sportsbooks
+                    )
                 st.session_state[preference_session_key] = True
             else:
                 for book in available_books:
@@ -2726,7 +2768,7 @@ def _render_ev_filter_bar(
                     "Apply sportsbooks",
                     type="primary",
                     width="stretch",
-                    on_click=_queue_sportsbook_preferences_cookie,
+                    on_click=_queue_sportsbook_preferences_storage,
                     args=(tuple(available_books), mode),
                 )
                 st.form_submit_button(

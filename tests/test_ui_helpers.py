@@ -34,7 +34,7 @@ from odds_scanner.ui import (
     _sportsbook_bet_url,
     _sportsbook_default_enabled,
     _sportsbook_event_url,
-    _sportsbook_preferences_cookie_name,
+    _sportsbook_preferences_storage_key,
     _value_comparison_markup,
     _without_recommendation_probability_screen,
 )
@@ -180,7 +180,7 @@ def test_saved_sportsbook_preferences_restore_only_available_books():
         available,
     ) == ("PlayNow", "Betway")
     assert _decode_sportsbook_preferences("not-json", available) is None
-    assert _sportsbook_preferences_cookie_name("OddsPapi Free").startswith("bettor_bureau_")
+    assert _sportsbook_preferences_storage_key("OddsPapi Free").startswith("bettor_bureau_")
 
 
 def test_bet_now_prefers_a_verified_event_deep_link(now):
