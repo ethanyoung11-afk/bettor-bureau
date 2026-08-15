@@ -28,6 +28,7 @@ from odds_scanner.analytics import (
     best_value_by_outcome,
     opportunities_from_value_audit,
 )
+from odds_scanner.background_refresh import OWNER_REFRESH_RUNNER
 from odds_scanner.domain import (
     ArbitrageOpportunity,
     BetStatus,
@@ -481,6 +482,28 @@ def _record_oddspapi_requests(
     return used, max(0, credit_limit - used)
 
 
+def _record_background_oddspapi_requests(
+    repository: QuoteRepository,
+    request_count: int,
+    *,
+    credit_limit: int,
+    as_of: datetime | None = None,
+) -> None:
+    """Persist usage from a worker thread without touching Streamlit state."""
+    effective_time = as_of or datetime.now(UTC)
+    settings = repository.load_settings()
+    month = effective_time.strftime("%Y-%m")
+    try:
+        used = int(settings.get("oddspapi_requests_used", "0"))
+    except ValueError:
+        used = 0
+    if settings.get("oddspapi_usage_month") != month:
+        used = 0
+    repository.save_setting("oddspapi_usage_month", month)
+    repository.save_setting("oddspapi_requests_used", str(max(0, used) + max(0, request_count)))
+    repository.save_setting("oddspapi_monthly_credit_limit", str(max(1, credit_limit)))
+
+
 def _refresh_config(mode: str) -> RefreshConfig:
     fresh_minutes = int(st.session_state.get("freshness_minutes", 5))
     warning_minutes = max(15, fresh_minutes)
@@ -510,6 +533,83 @@ def _diagnostic_message(diagnostics: RefreshDiagnostics) -> str:
         f"{diagnostics.new_opportunities} new +EV · "
         f"{diagnostics.deactivated_opportunities} removed"
     )
+
+
+def _run_background_refresh(
+    provider: OddsProvider,
+    repository: QuoteRepository,
+    config: RefreshConfig,
+    request: RefreshRequest,
+    *,
+    credit_limit: int,
+) -> RefreshDiagnostics:
+    diagnostics = OddsRefreshService(
+        provider=provider,
+        repository=repository,
+        config=config,
+    ).refresh(request)
+    if isinstance(provider, OddsPapiProvider):
+        repository.save_setting(
+            "oddspapi_tournament_ids",
+            json.dumps(provider.tournament_ids, separators=(",", ":")),
+        )
+        repository.save_setting(
+            "oddspapi_market_catalog",
+            json.dumps(provider.market_catalog, separators=(",", ":")),
+        )
+        if provider.include_schedule and diagnostics.status is RefreshResultStatus.SUCCESS:
+            repository.save_setting(
+                "oddspapi_schedule_refreshed_at",
+                diagnostics.finished_at.isoformat(),
+            )
+        _record_background_oddspapi_requests(
+            repository,
+            provider.request_count,
+            credit_limit=credit_limit,
+        )
+    return diagnostics
+
+
+def _sync_background_refresh_result(provider_id: str) -> None:
+    status = OWNER_REFRESH_RUNNER.status(provider_id)
+    if status is None or status.finished_at is None:
+        return
+    signature = status.finished_at.isoformat()
+    seen_key = f"owner_refresh_result_seen_{provider_id}"
+    if st.session_state.get(seen_key) == signature:
+        return
+    st.session_state[seen_key] = signature
+    if status.diagnostics is not None:
+        st.session_state["last_refresh_diagnostics"] = status.diagnostics
+        st.session_state["refresh_notice"] = _diagnostic_message(status.diagnostics)
+    else:
+        st.session_state["refresh_notice"] = (
+            f"Odds update failed: {status.error_message or 'Unknown refresh error'}"
+        )
+    _invalidate_repository_caches()
+    _invalidate_view_snapshot(provider_id)
+
+
+@st.fragment(run_every=2)  # type: ignore[untyped-decorator]
+def _render_background_refresh_status(provider_id: str) -> None:
+    status = OWNER_REFRESH_RUNNER.status(provider_id)
+    if status is None:
+        return
+    if status.is_running:
+        elapsed = max(0, int((datetime.now(UTC) - status.started_at).total_seconds()))
+        st.info(f"Refreshing odds in the background... {elapsed}s elapsed")
+        return
+    signature = status.finished_at.isoformat() if status.finished_at is not None else ""
+    seen_key = f"owner_refresh_result_seen_{provider_id}"
+    if signature and st.session_state.get(seen_key) != signature:
+        _sync_background_refresh_result(provider_id)
+        st.rerun()
+    if status.state == "succeeded" and status.diagnostics is not None:
+        st.success(_diagnostic_message(status.diagnostics))
+    elif status.state == "already_running":
+        st.info("An odds refresh is already running.")
+    else:
+        st.error(f"Odds update failed: {status.error_message or 'Unknown refresh error'}")
 
 
 def _render_refresh_admin_status(
@@ -1570,6 +1670,9 @@ def _render_owner_panel(
     panel = st.container(key="owner_panel").expander("Owner controls", expanded=False)
     with panel:
         if is_admin:
+            provider_id = _provider_id(mode)
+            background_status = OWNER_REFRESH_RUNNER.status(provider_id)
+            refresh_running = bool(background_status and background_status.is_running)
             used = _oddspapi_requests_used(repository)
             credit_limit = _oddspapi_credit_limit(repository)
             remaining = max(0, credit_limit - used)
@@ -1581,13 +1684,15 @@ def _render_owner_panel(
             )
             st.caption("Only the owner and the central scheduled updater can spend API calls.")
             st.button(
-                "Refresh latest odds",
+                "Refresh running..." if refresh_running else "Refresh latest odds",
                 icon=":material/refresh:",
                 type="primary",
                 width="stretch",
                 key="admin_refresh_odds",
                 on_click=_queue_owner_refresh,
+                disabled=refresh_running,
             )
+            _render_background_refresh_status(provider_id)
             st.divider()
             _render_refresh_admin_status(repository, mode)
             st.divider()
@@ -4432,6 +4537,7 @@ def run() -> None:
     )
     controls = _sidebar(repository, is_admin=is_admin)
     header_odds_status = _render_page_header()
+    _sync_background_refresh_result(selected_provider_id)
     owner_refresh = bool(st.session_state.pop("owner_refresh_requested", False))
     controls["refresh"] = bool(controls["refresh"] or owner_refresh)
     controls["odds_format"] = str(st.session_state.get("odds_format", DEFAULT_ODDS_FORMAT))
@@ -4502,33 +4608,23 @@ def run() -> None:
                         MARKET_KINDS[key] for key in selected_market_keys if key in MARKET_KINDS
                     ),
                 )
-                with st.spinner("Refreshing odds…"):
-                    diagnostics = OddsRefreshService(
-                        provider=provider,
-                        repository=repository,
-                        config=_refresh_config(str(controls["mode"])),
-                    ).refresh(refresh_request)
-                st.session_state["last_refresh_diagnostics"] = diagnostics
-                if isinstance(provider, OddsPapiProvider):
-                    repository.save_setting(
-                        "oddspapi_tournament_ids",
-                        json.dumps(provider.tournament_ids, separators=(",", ":")),
-                    )
-                    repository.save_setting(
-                        "oddspapi_market_catalog",
-                        json.dumps(provider.market_catalog, separators=(",", ":")),
-                    )
-                    if (
-                        provider.include_schedule
-                        and diagnostics.status is RefreshResultStatus.SUCCESS
-                    ):
-                        repository.save_setting(
-                            "oddspapi_schedule_refreshed_at",
-                            diagnostics.finished_at.isoformat(),
-                        )
-                    _record_oddspapi_requests(repository, provider.request_count)
-                st.session_state["refresh_notice"] = _diagnostic_message(diagnostics)
-                _invalidate_view_snapshot(provider.provider_id)
+                refresh_config = _refresh_config(str(controls["mode"]))
+                refresh_credit_limit = _oddspapi_credit_limit(repository)
+                started = OWNER_REFRESH_RUNNER.start(
+                    provider.provider_id,
+                    lambda: _run_background_refresh(
+                        provider,
+                        repository,
+                        refresh_config,
+                        refresh_request,
+                        credit_limit=refresh_credit_limit,
+                    ),
+                )
+                st.session_state["refresh_notice"] = (
+                    "Odds refresh started. You can keep using the app while it updates."
+                    if started
+                    else "Odds refresh is already running."
+                )
                 st.rerun()
             except (KeyError, ValueError) as exc:
                 st.error(str(exc))
