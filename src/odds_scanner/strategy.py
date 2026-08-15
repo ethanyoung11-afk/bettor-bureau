@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal
 from math import log1p
 
 from odds_scanner.analytics import ValueOpportunity, detect_consensus_value
@@ -20,7 +20,7 @@ from odds_scanner.opportunities import implied_probability
 from odds_scanner.presentation import decimal_to_american
 from odds_scanner.storage.base import QuoteRepository
 
-OFFICIAL_STRATEGY_KEY = "balanced-quarter-kelly-v1"
+OFFICIAL_STRATEGY_KEY = "balanced-quarter-kelly-v2"
 OFFICIAL_RECOMMENDATION_PREFIX = "official-recommendation:"
 OFFICIAL_STARTING_BANKROLL_UNITS = Decimal("100")
 OFFICIAL_UNIT_VALUE_DOLLARS = Decimal("100")
@@ -29,11 +29,13 @@ OFFICIAL_MINIMUM_BREAK_EVEN_PROBABILITY = Decimal("0.30")
 OFFICIAL_MINIMUM_AMERICAN_ODDS = -200
 OFFICIAL_MAXIMUM_AMERICAN_ODDS = 300
 OFFICIAL_MINIMUM_REFERENCE_BOOKS = 3
-OFFICIAL_MAXIMUM_BETS_PER_SLATE = 3
 OFFICIAL_KELLY_FRACTION = Decimal("0.25")
 OFFICIAL_MAXIMUM_STAKE_FRACTION = Decimal("0.01")
-OFFICIAL_MINIMUM_STAKE_FRACTION = Decimal("0.0025")
-OFFICIAL_STAKE_INCREMENT_UNITS = Decimal("0.05")
+OFFICIAL_MINIMUM_STAKE_FRACTION = Decimal("0.0001")
+OFFICIAL_MAXIMUM_EVENT_EXPOSURE_FRACTION = Decimal("0.02")
+OFFICIAL_MAXIMUM_LEAGUE_EXPOSURE_FRACTION = Decimal("0.08")
+OFFICIAL_MAXIMUM_SLATE_EXPOSURE_FRACTION = Decimal("0.20")
+OFFICIAL_STAKE_INCREMENT_UNITS = Decimal("0.01")
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,14 +79,68 @@ def _stake_units(
 ) -> tuple[Decimal, Decimal]:
     full_kelly = _kelly_fraction(opportunity)
     proposed_fraction = full_kelly * OFFICIAL_KELLY_FRACTION
-    stake_fraction = min(proposed_fraction, OFFICIAL_MAXIMUM_STAKE_FRACTION)
-    if stake_fraction < OFFICIAL_MINIMUM_STAKE_FRACTION:
-        return Decimal("0"), full_kelly
+    stake_fraction = max(
+        OFFICIAL_MINIMUM_STAKE_FRACTION,
+        min(proposed_fraction, OFFICIAL_MAXIMUM_STAKE_FRACTION),
+    )
     raw_stake = bankroll_units * stake_fraction
     rounded_stake = (
         raw_stake / OFFICIAL_STAKE_INCREMENT_UNITS
     ).quantize(Decimal("1"), rounding=ROUND_HALF_UP) * OFFICIAL_STAKE_INCREMENT_UNITS
     return max(OFFICIAL_STAKE_INCREMENT_UNITS, rounded_stake), full_kelly
+
+
+def _scale_recommendation_group(
+    recommendations: list[OfficialRecommendation],
+    indexes: list[int],
+    cap_units: Decimal,
+) -> None:
+    total = sum((recommendations[index].stake_units for index in indexes), Decimal("0"))
+    if total <= cap_units or total <= 0:
+        return
+    scale = cap_units / total
+    for index in indexes:
+        scaled = (
+            recommendations[index].stake_units
+            * scale
+            / OFFICIAL_STAKE_INCREMENT_UNITS
+        ).quantize(Decimal("1"), rounding=ROUND_DOWN) * OFFICIAL_STAKE_INCREMENT_UNITS
+        recommendations[index] = replace(
+            recommendations[index],
+            stake_units=max(OFFICIAL_STAKE_INCREMENT_UNITS, scaled),
+        )
+
+
+def _apply_portfolio_exposure_limits(
+    recommendations: list[OfficialRecommendation],
+    event_map: dict[str, Event],
+    bankroll_units: Decimal,
+) -> list[OfficialRecommendation]:
+    if not recommendations:
+        return recommendations
+
+    event_indexes: dict[str, list[int]] = {}
+    league_indexes: dict[str, list[int]] = {}
+    for index, recommendation in enumerate(recommendations):
+        event_id = recommendation.opportunity.quote.outcome.market.event_id
+        event_indexes.setdefault(event_id, []).append(index)
+        event = event_map[event_id]
+        league_indexes.setdefault(event.league_id, []).append(index)
+
+    event_cap = bankroll_units * OFFICIAL_MAXIMUM_EVENT_EXPOSURE_FRACTION
+    for indexes in event_indexes.values():
+        _scale_recommendation_group(recommendations, indexes, event_cap)
+
+    league_cap = bankroll_units * OFFICIAL_MAXIMUM_LEAGUE_EXPOSURE_FRACTION
+    for indexes in league_indexes.values():
+        _scale_recommendation_group(recommendations, indexes, league_cap)
+
+    _scale_recommendation_group(
+        recommendations,
+        list(range(len(recommendations))),
+        bankroll_units * OFFICIAL_MAXIMUM_SLATE_EXPOSURE_FRACTION,
+    )
+    return recommendations
 
 
 def _growth_score(
@@ -113,9 +169,9 @@ def select_official_recommendations(
     *,
     as_of: datetime,
     bankroll_units: Decimal,
-    limit: int = OFFICIAL_MAXIMUM_BETS_PER_SLATE,
+    limit: int | None = None,
 ) -> tuple[OfficialRecommendation, ...]:
-    """Choose a risk-aware slate without forcing bets that fail the policy."""
+    """Choose every qualifying bet, then size the full slate as one portfolio."""
     candidates: list[OfficialRecommendation] = []
     for opportunity in _best_value_by_outcome(values):
         event = event_map.get(opportunity.quote.outcome.market.event_id)
@@ -153,17 +209,8 @@ def select_official_recommendations(
         ),
         reverse=True,
     )
-    selected: list[OfficialRecommendation] = []
-    selected_events: set[str] = set()
-    for candidate in candidates:
-        event_id = candidate.opportunity.quote.outcome.market.event_id
-        if event_id in selected_events:
-            continue
-        selected.append(candidate)
-        selected_events.add(event_id)
-        if len(selected) >= limit:
-            break
-    return tuple(selected)
+    allocated = _apply_portfolio_exposure_limits(candidates, event_map, bankroll_units)
+    return tuple(allocated if limit is None else allocated[:limit])
 
 
 def official_bets(bets: tuple[TrackedBet, ...]) -> tuple[TrackedBet, ...]:
@@ -246,6 +293,16 @@ def _recommendation_note(recommendation: OfficialRecommendation) -> str:
     return f"{OFFICIAL_RECOMMENDATION_PREFIX}{recommendation_id}|{metadata}"
 
 
+def _recorded_position(bet: TrackedBet) -> tuple[str, str, str] | None:
+    try:
+        metadata = json.loads(bet.notes.split("|", 1)[1])
+        outcome_id = str(metadata["outcome_id"])
+        sportsbook_id = str(metadata["sportsbook_id"])
+    except (IndexError, KeyError, TypeError, ValueError):
+        return None
+    return bet.event_id, outcome_id, sportsbook_id
+
+
 def publish_official_recommendations(
     repository: QuoteRepository,
     provider_id: str,
@@ -277,6 +334,11 @@ def publish_official_recommendations(
         bankroll_units=current_bankroll,
     )
     prior_official_bets = official_bets(current_bets)
+    recorded_positions = {
+        position
+        for bet in prior_official_bets
+        if (position := _recorded_position(bet)) is not None
+    }
     recorded_ids = {
         bet.notes.removeprefix(OFFICIAL_RECOMMENDATION_PREFIX).split("|", 1)[0]
         for bet in prior_official_bets
@@ -284,7 +346,8 @@ def publish_official_recommendations(
     legacy_event_ids = {
         bet.event_id
         for bet in prior_official_bets
-        if stable_id(
+        if _recorded_position(bet) is None
+        or stable_id(
             "official-recommendation",
             OFFICIAL_STRATEGY_KEY,
             bet.event_id,
@@ -296,7 +359,12 @@ def publish_official_recommendations(
         opportunity = recommendation.opportunity
         event = event_map[opportunity.quote.outcome.market.event_id]
         recommendation_id = _recommendation_id(recommendation)
-        if recommendation_id in recorded_ids or event.id in legacy_event_ids:
+        position = (event.id, opportunity.quote.outcome.id, opportunity.quote.sportsbook.id)
+        if (
+            recommendation_id in recorded_ids
+            or position in recorded_positions
+            or event.id in legacy_event_ids
+        ):
             continue
         tracked = TrackedBet(
             id=None,
@@ -327,4 +395,5 @@ def publish_official_recommendations(
             )
         )
         recorded_ids.add(recommendation_id)
+        recorded_positions.add(position)
     return tuple(published)

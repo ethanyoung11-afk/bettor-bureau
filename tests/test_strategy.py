@@ -7,7 +7,7 @@ from decimal import Decimal
 
 from conftest import make_market, make_quote
 
-from odds_scanner.analytics import detect_consensus_value
+from odds_scanner.analytics import ValueOpportunity, detect_consensus_value
 from odds_scanner.domain import (
     Event,
     League,
@@ -19,6 +19,8 @@ from odds_scanner.domain import (
 from odds_scanner.refresh import OddsRefreshService, RefreshConfig, RefreshRequest
 from odds_scanner.storage.sqlite import SQLiteQuoteRepository
 from odds_scanner.strategy import (
+    OFFICIAL_MAXIMUM_EVENT_EXPOSURE_FRACTION,
+    OFFICIAL_MAXIMUM_SLATE_EXPOSURE_FRACTION,
     OFFICIAL_MAXIMUM_STAKE_FRACTION,
     OFFICIAL_MINIMUM_STAKE_FRACTION,
     OFFICIAL_STARTING_BANKROLL_UNITS,
@@ -121,7 +123,7 @@ class StrategySnapshotProvider:
         return self.snapshot
 
 
-def test_official_strategy_selects_unique_events_and_sizes_quarter_kelly(now):
+def test_official_strategy_selects_every_qualifier_and_sizes_the_portfolio(now):
     snapshot = _strategy_snapshot(now)
     values = detect_consensus_value(
         snapshot.quotes,
@@ -139,18 +141,57 @@ def test_official_strategy_selects_unique_events_and_sizes_quarter_kelly(now):
         bankroll_units=OFFICIAL_STARTING_BANKROLL_UNITS,
     )
 
-    assert len(recommendations) == 3
-    assert len(
-        {
-            item.opportunity.quote.outcome.market.event_id
-            for item in recommendations
-        }
-    ) == len(recommendations)
+    assert len(recommendations) == 4
     assert all(
         OFFICIAL_STARTING_BANKROLL_UNITS * OFFICIAL_MINIMUM_STAKE_FRACTION
         <= item.stake_units
         <= OFFICIAL_STARTING_BANKROLL_UNITS * OFFICIAL_MAXIMUM_STAKE_FRACTION
         for item in recommendations
+    )
+    assert sum((item.stake_units for item in recommendations), Decimal("0")) <= (
+        OFFICIAL_STARTING_BANKROLL_UNITS * OFFICIAL_MAXIMUM_SLATE_EXPOSURE_FRACTION
+    )
+    by_event: dict[str, Decimal] = {}
+    for item in recommendations:
+        event_id = item.opportunity.quote.outcome.market.event_id
+        by_event[event_id] = by_event.get(event_id, Decimal("0")) + item.stake_units
+    assert all(
+        exposure
+        <= OFFICIAL_STARTING_BANKROLL_UNITS * OFFICIAL_MAXIMUM_EVENT_EXPOSURE_FRACTION
+        for exposure in by_event.values()
+    )
+
+
+def test_official_strategy_can_track_multiple_qualifying_outcomes_in_one_event(now):
+    snapshot = _strategy_snapshot(now)
+    event = snapshot.events[0]
+    event_quotes = tuple(
+        quote
+        for quote in snapshot.quotes
+        if quote.outcome.market.event_id == event.id
+        and quote.sportsbook.name == "PlayNow"
+    )
+    values = tuple(
+        ValueOpportunity(
+            quote=quote,
+            fair_probability=Decimal("1.05") / quote.decimal_odds,
+            expected_value=Decimal("0.05"),
+            reference_books=3,
+            reference_sportsbooks=("Alpha", "Beta", "Gamma"),
+        )
+        for quote in event_quotes
+    )
+
+    recommendations = select_official_recommendations(
+        values,
+        {event.id: event},
+        as_of=now,
+        bankroll_units=OFFICIAL_STARTING_BANKROLL_UNITS,
+    )
+
+    assert len(recommendations) == 2
+    assert sum((item.stake_units for item in recommendations), Decimal("0")) <= (
+        OFFICIAL_STARTING_BANKROLL_UNITS * OFFICIAL_MAXIMUM_EVENT_EXPOSURE_FRACTION
     )
 
 
@@ -173,12 +214,12 @@ def test_successful_refresh_publication_is_idempotent_and_keeps_strategy_metadat
         max_age=timedelta(minutes=30),
     )
 
-    assert len(first) == 3
+    assert len(first) == 4
     assert second == ()
-    assert len(repository.list_bets()) == 3
+    assert len(repository.list_bets()) == 4
     assert all(OFFICIAL_STRATEGY_KEY in bet.notes for bet in first)
     assert all(
-        Decimal("25")
+        Decimal("1")
         <= bet.stake * OFFICIAL_UNIT_VALUE_DOLLARS
         <= Decimal("100")
         for bet in first
@@ -239,7 +280,7 @@ def test_refresh_engine_automatically_publishes_the_official_slate(tmp_path, now
 
     service.refresh(request)
 
-    assert len(repository.list_bets()) == 3
+    assert len(repository.list_bets()) == 4
     settings = repository.load_settings()
-    assert settings["official_recommendations_last_published"] == "3"
+    assert settings["official_recommendations_last_published"] == "4"
     assert settings["official_recommendations_last_run_at"] == now.isoformat()

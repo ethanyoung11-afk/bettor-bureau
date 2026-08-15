@@ -20,7 +20,6 @@ from odds_scanner.ui import (
     _decode_sportsbook_preferences,
     _event_odds_frame,
     _event_team_names,
-    _exclude_recommended_opportunities,
     _filter_value_opportunities,
     _format_strategy_dollars,
     _game_event_markup,
@@ -36,7 +35,6 @@ from odds_scanner.ui import (
     _sportsbook_event_url,
     _sportsbook_preferences_storage_key,
     _value_comparison_markup,
-    _without_recommendation_probability_screen,
 )
 
 
@@ -250,33 +248,7 @@ def test_ev_board_keeps_one_best_offer_per_bet_and_filters_implied_probability(n
     assert len(best_value_by_outcome(values)) <= len(values)
 
 
-def test_more_ev_keeps_shared_filters_but_does_not_hide_longshots(now):
-    filters = EVFilterState(
-        league_id="nfl",
-        market_kind=None,
-        minimum_ev=Decimal("0.02"),
-        my_books=("PlayNow", "Betway"),
-        minimum_implied_probability=Decimal("0.30"),
-        minimum_american_odds=-200,
-        maximum_american_odds=300,
-        minimum_consensus_books=4,
-        starts_before=now + timedelta(days=2),
-        fresh_only=True,
-        sort_by="EV % (High to Low)",
-    )
-
-    more_filters = _without_recommendation_probability_screen(filters)
-
-    assert more_filters.minimum_implied_probability == 0
-    assert more_filters.minimum_american_odds is None
-    assert more_filters.maximum_american_odds is None
-    assert more_filters.league_id == filters.league_id
-    assert more_filters.minimum_ev == filters.minimum_ev
-    assert more_filters.my_books == filters.my_books
-    assert more_filters.minimum_consensus_books == filters.minimum_consensus_books
-
-
-def test_other_ev_excludes_recommendations_without_dropping_other_markets(now):
+def test_all_ev_keeps_recommendations_and_sportsbook_filter_controls_visibility(now):
     snapshots = generate_demo_snapshots(now)
     quotes = deduplicate_quotes(quote for snapshot in snapshots for quote in snapshot.quotes)
     values = detect_consensus_value(
@@ -308,13 +280,27 @@ def test_other_ev_excludes_recommendations_without_dropping_other_markets(now):
         max_age=timedelta(minutes=5),
     )
     recommended = _recommended_value_opportunities(all_filtered, events, as_of=now)
-    other = _exclude_recommended_opportunities(all_filtered, recommended)
+    playnow_values = detect_consensus_value(
+        quotes,
+        as_of=now,
+        max_age=timedelta(minutes=5),
+        minimum_ev=Decimal("0"),
+        candidate_sportsbooks=("PlayNow",),
+    )
+    visible = _recommended_value_opportunities(playnow_values, events, as_of=now)
+    hidden_values = detect_consensus_value(
+        quotes,
+        as_of=now,
+        max_age=timedelta(minutes=5),
+        minimum_ev=Decimal("0"),
+        candidate_sportsbooks=(),
+    )
 
     recommended_keys = {(item.quote.sportsbook.id, item.quote.outcome.id) for item in recommended}
-    other_keys = {(item.quote.sportsbook.id, item.quote.outcome.id) for item in other}
-    assert recommended_keys.isdisjoint(other_keys)
-    assert len(other) + len(recommended) == len(all_filtered)
-    assert {item.quote.outcome.market.kind for item in other}
+    all_keys = {(item.quote.sportsbook.id, item.quote.outcome.id) for item in all_filtered}
+    assert recommended_keys <= all_keys
+    assert all(item.quote.sportsbook.name == "PlayNow" for item in visible)
+    assert hidden_values == ()
 
 
 def test_more_ev_has_its_own_sorting(now):
@@ -352,7 +338,7 @@ def test_recommended_bets_clear_the_product_criteria(now):
 
     recommended = _recommended_value_opportunities(values, events, as_of=now)
 
-    assert len(recommended) == 3
+    assert len(recommended) > 3
     assert all(item.expected_value >= RECOMMENDED_MINIMUM_EV for item in recommended)
     assert all(
         implied_probability(item.quote.decimal_odds) >= RECOMMENDED_MINIMUM_IMPLIED_PROBABILITY

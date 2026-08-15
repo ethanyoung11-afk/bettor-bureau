@@ -6,7 +6,7 @@ import hmac
 import html
 import json
 import os
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from functools import lru_cache
@@ -2790,9 +2790,9 @@ def _render_ev_filter_bar(
 
         with more_col.popover("More Filters", width="stretch"):
             st.caption(
-                "Probability and odds-range controls refine Recommended Bets only. "
-                "Sport, market, EV, sportsbooks, consensus, timing, and freshness "
-                "filter both sections."
+                "These controls refine All +EV Bets. My Sportsbooks is the only "
+                "personal filter applied to Recommended Bets; it does not change "
+                "the global strategy or its tracking."
             )
             with st.form("secondary_ev_filters", border=False):
                 implied_preset = st.selectbox(
@@ -3012,29 +3012,6 @@ def _filter_value_opportunities(
     return tuple(filtered)
 
 
-def _without_recommendation_probability_screen(filters: EVFilterState) -> EVFilterState:
-    """Keep shared filters while allowing longshots into the complete +EV list."""
-    return replace(
-        filters,
-        minimum_implied_probability=Decimal("0"),
-        minimum_american_odds=None,
-        maximum_american_odds=None,
-    )
-
-
-def _exclude_recommended_opportunities(
-    values: tuple[ValueOpportunity, ...],
-    recommended: tuple[ValueOpportunity, ...],
-) -> tuple[ValueOpportunity, ...]:
-    """Return the complete filtered +EV list without repeating the top picks."""
-    recommended_keys = {(item.quote.sportsbook.id, item.quote.outcome.id) for item in recommended}
-    return tuple(
-        item
-        for item in values
-        if (item.quote.sportsbook.id, item.quote.outcome.id) not in recommended_keys
-    )
-
-
 def _sort_more_ev_values(
     values: tuple[ValueOpportunity, ...],
     event_map: dict[str, Event],
@@ -3059,7 +3036,7 @@ def _recommended_value_opportunities(
     event_map: dict[str, Event],
     *,
     as_of: datetime,
-    limit: int = 3,
+    limit: int | None = None,
     style: str = "Balanced",
 ) -> tuple[ValueOpportunity, ...]:
     """Return the official risk-adjusted slate used by the refresh publisher."""
@@ -3607,20 +3584,15 @@ def _render_priority_value_bets(
     *,
     recommendation_values: tuple[ValueOpportunity, ...] | None = None,
 ) -> None:
-    if not values:
-        st.markdown(
-            '<div class="ev-empty"><strong>No +EV bets match these filters.</strong>'
-            "Try lowering your minimum EV or break-even probability, expanding your "
-            "sportsbook selection, or clearing some filters.</div>",
-            unsafe_allow_html=True,
+    recommended = (
+        _recommended_value_opportunities(
+            values,
+            event_map,
+            as_of=as_of,
+            style="Balanced",
         )
-        return
-
-    recommended = _recommended_value_opportunities(
-        values if recommendation_values is None else recommendation_values,
-        event_map,
-        as_of=as_of,
-        style="Balanced",
+        if recommendation_values is None
+        else recommendation_values
     )
     if recommended:
         recommendation_rows = "".join(
@@ -3653,18 +3625,23 @@ def _render_priority_value_bets(
             unsafe_allow_html=True,
         )
 
-    additional_values = _exclude_recommended_opportunities(values, recommended)
-    if not additional_values:
+    if not values:
+        st.markdown(
+            '<div class="ev-empty"><strong>No +EV bets match your filters.</strong>'
+            "Try lowering your minimum EV, expanding your sportsbook selection, or "
+            "clearing some filters.</div>",
+            unsafe_allow_html=True,
+        )
         return
     with st.container(key="more_ev_header"):
         title_column, sort_column = st.columns([4, 1.15], vertical_alignment="bottom")
         title_column.markdown(
-            '<div class="all-bets-title">Other +EV Bets '
-            f'<span class="all-bets-count">{len(additional_values)}</span></div>',
+            '<div class="all-bets-title">All +EV Bets '
+            f'<span class="all-bets-count">{len(values)}</span></div>',
             unsafe_allow_html=True,
         )
         more_sort = sort_column.selectbox(
-            "Sort Other +EV Bets",
+            "Sort All +EV Bets",
             [
                 "EV % (High to Low)",
                 "Win Probability",
@@ -3674,14 +3651,14 @@ def _render_priority_value_bets(
             key="more_ev_sort",
             label_visibility="collapsed",
         )
-    additional_values = _sort_more_ev_values(
-        additional_values,
+    all_ev_values = _sort_more_ev_values(
+        values,
         event_map,
         more_sort,
     )
     visible_count = max(20, int(st.session_state.get("ev_visible_count", 20)))
-    visible_count = min(visible_count, len(additional_values))
-    visible_values = additional_values[:visible_count]
+    visible_count = min(visible_count, len(all_ev_values))
+    visible_values = all_ev_values[:visible_count]
     page_rows = "".join(
         _board_row_markup(
             opportunity,
@@ -3692,16 +3669,16 @@ def _render_priority_value_bets(
             as_of,
             recommended=False,
         )
-        for rank, opportunity in enumerate(visible_values, start=len(recommended) + 1)
+        for rank, opportunity in enumerate(visible_values, start=1)
     )
     st.markdown(
         f'<div class="ev-table-wrap">{_board_header_markup()}{page_rows}</div>',
         unsafe_allow_html=True,
     )
-    if visible_count < len(additional_values):
+    if visible_count < len(all_ev_values):
         _, button_column, _ = st.columns([4, 1.6, 4])
         with button_column, st.container(key="load_more_ev"):
-            remaining_count = len(additional_values) - visible_count
+            remaining_count = len(all_ev_values) - visible_count
             st.button(
                 f"Load {min(20, remaining_count)} more",
                 on_click=_show_more_ev_bets,
@@ -3890,8 +3867,8 @@ def _render_official_performance(
         )
         pending_column.metric("Open bets", performance.pending)
         st.caption(
-            "$10,000 starting bankroll · quarter-Kelly sizing · $25–$100 per pick · "
-            "up to three picks per refresh · one pick per event"
+            "$10,000 starting bankroll · quarter-Kelly sizing · every qualifying pick "
+            "tracked · 1% per-bet cap · portfolio exposure controls"
         )
         if performance.voids:
             st.caption(f"{performance.voids} voided recommendation(s) excluded from ROI.")
@@ -4344,19 +4321,29 @@ def run() -> None:
             value_audit,
             minimum_ev=Decimal("0"),
         )
-        recommendation_values = _filter_value_opportunities(
+        all_filtered_values = _filter_value_opportunities(
             market_values,
             event_map,
             ev_filters,
             as_of=as_of,
             max_age=controls["freshness"],
         )
-        all_filtered_values = _filter_value_opportunities(
-            market_values,
-            event_map,
-            _without_recommendation_probability_screen(ev_filters),
+
+        visible_recommendation_audit = audit_consensus_value(
+            quotes,
             as_of=as_of,
             max_age=controls["freshness"],
+            candidate_sportsbooks=ev_filters.my_books,
+            include_stale=False,
+        )
+        visible_recommendation_values = opportunities_from_value_audit(
+            visible_recommendation_audit,
+            minimum_ev=Decimal("0"),
+        )
+        visible_recommendations = _recommended_value_opportunities(
+            visible_recommendation_values,
+            event_map,
+            as_of=as_of,
         )
         controls["my_books"] = list(ev_filters.my_books)
         _render_overview(
@@ -4365,7 +4352,7 @@ def run() -> None:
             quotes,
             as_of,
             controls["odds_format"],
-            recommendation_values=recommendation_values,
+            recommendation_values=visible_recommendations,
         )
     elif active_view == "Games":
         comparison_books = sorted(
