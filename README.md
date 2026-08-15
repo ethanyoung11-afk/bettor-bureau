@@ -85,6 +85,19 @@ The scheduled updater is in `.github/workflows/refresh-odds.yml`. Its free-plan 
 full refreshes per week, a 250-call monthly limit, and a 25-call owner reserve. Manual owner
 refreshes share the same allowance. Increase the schedule only after the provider plan is upgraded.
 
+### Official paper strategy
+
+Every successful manual or scheduled live-odds refresh evaluates the same fixed official strategy
+and publishes up to three qualifying paper bets. The offered sportsbook is excluded from its own
+consensus. Bets need at least 2% EV, a 30% break-even probability, American odds from -200 to +300,
+and at least three independent reference books. The slate is ranked by confidence-adjusted expected
+log bankroll growth and is limited to one bet per event.
+
+The paper bankroll starts at 100 units, equivalent to $10,000 at $100 per unit. Stakes use
+quarter-Kelly sizing, rounded to 0.05 units, with a 0.25-unit minimum and 1-unit maximum. A pick is
+recorded once at its original sportsbook and price; later price movement never rewrites history.
+Run `python -m odds_scanner.strategy_review` to generate the weekly performance and strategy report.
+
 Select **The Odds API** in the sidebar, enter a key from
 [The Odds API](https://the-odds-api.com/), and choose **Fetch live odds**. The rest of the product
 uses the same normalized domain objects and opportunity engines in either mode.

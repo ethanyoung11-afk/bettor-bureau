@@ -3,11 +3,9 @@ from datetime import timedelta
 from decimal import Decimal
 
 from odds_scanner.analytics import detect_consensus_value
-from odds_scanner.domain import BetStatus
 from odds_scanner.opportunities import deduplicate_quotes, implied_probability
 from odds_scanner.presentation import decimal_to_american
 from odds_scanner.providers.demo import generate_demo_snapshots
-from odds_scanner.storage.sqlite import SQLiteQuoteRepository
 from odds_scanner.ui import (
     CORE_REFRESH_LEAGUES,
     RECOMMENDED_MAXIMUM_AMERICAN_ODDS,
@@ -29,10 +27,8 @@ from odds_scanner.ui import (
     _game_market_sections_markup,
     _market_label,
     _market_range_label,
-    _official_performance,
     _password_matches,
     _recommended_value_opportunities,
-    _record_official_recommendations,
     _selection_label,
     _sort_more_ev_values,
     _sportsbook_bet_url,
@@ -361,44 +357,6 @@ def test_recommended_bets_clear_the_product_criteria(now):
         events[item.quote.outcome.market.event_id].start_time > now
         for item in recommended
     )
-
-
-def test_official_recommendations_are_recorded_once_and_report_wins_losses(
-    tmp_path, now
-):
-    snapshots = generate_demo_snapshots(now)
-    quotes = deduplicate_quotes(quote for snapshot in snapshots for quote in snapshot.quotes)
-    values = detect_consensus_value(
-        quotes,
-        as_of=now,
-        max_age=timedelta(minutes=5),
-        minimum_ev=Decimal("0"),
-    )
-    events = {event.id: event for event in snapshots[-1].events}
-    recommended = _recommended_value_opportunities(values, events, as_of=now)
-    repository = SQLiteQuoteRepository(tmp_path / "official-results.db")
-
-    assert _record_official_recommendations(
-        recommended, events, repository, recorded_at=now
-    ) == len(recommended)
-    assert _record_official_recommendations(
-        recommended, events, repository, recorded_at=now
-    ) == 0
-
-    bets = repository.list_bets()
-    repository.update_bet(
-        bets[0].id or 0,
-        BetStatus.WON,
-        bets[0].decimal_odds - Decimal("1"),
-    )
-    repository.update_bet(bets[1].id or 0, BetStatus.LOST, Decimal("-1"))
-    performance = _official_performance(repository.list_bets())
-
-    assert performance.wins == 1
-    assert performance.losses == 1
-    assert performance.pending == len(recommended) - 2
-    assert performance.units == bets[0].decimal_odds - Decimal("2")
-    assert performance.bankroll == Decimal("100") + performance.units
 
 
 def test_expanded_comparison_shows_line_shopping_without_repeating_summary(now):

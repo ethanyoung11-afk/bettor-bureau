@@ -21,6 +21,7 @@ from odds_scanner.domain import (
 from odds_scanner.opportunities import implied_probability
 from odds_scanner.providers.base import OddsProvider
 from odds_scanner.storage.base import QuoteRepository
+from odds_scanner.strategy import publish_official_recommendations
 
 
 class RefreshResultStatus(StrEnum):
@@ -467,6 +468,20 @@ class OddsRefreshService:
             provider_id,
             finished_at - timedelta(minutes=self.config.freshness.stale_minutes),
             finished_at,
+        )
+        published = publish_official_recommendations(
+            self.repository,
+            provider_id,
+            as_of=finished_at,
+            max_age=timedelta(minutes=self.config.freshness.stale_minutes),
+        )
+        self.repository.save_setting(
+            "official_recommendations_last_published",
+            str(len(published)),
+        )
+        self.repository.save_setting(
+            "official_recommendations_last_run_at",
+            finished_at.isoformat(),
         )
         active_after = {item.id for item in updates if item.is_active}
         deactivated = len(prior_active_ids - active_after)

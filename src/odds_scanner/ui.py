@@ -61,6 +61,17 @@ from odds_scanner.refresh import (
 )
 from odds_scanner.storage.base import QuoteRepository
 from odds_scanner.storage.sqlite import SQLiteQuoteRepository
+from odds_scanner.strategy import (
+    OFFICIAL_MAXIMUM_AMERICAN_ODDS,
+    OFFICIAL_MINIMUM_AMERICAN_ODDS,
+    OFFICIAL_MINIMUM_BREAK_EVEN_PROBABILITY,
+    OFFICIAL_MINIMUM_EV,
+    OFFICIAL_MINIMUM_REFERENCE_BOOKS,
+    OFFICIAL_STARTING_BANKROLL_UNITS,
+    OFFICIAL_UNIT_VALUE_DOLLARS,
+    select_official_recommendations,
+)
+from odds_scanner.strategy import official_bets as strategy_official_bets
 
 LEAGUE_LABELS = {config.league_name: key for key, config in FOOTBALL_LEAGUES.items()}
 LEAGUE_IDS = {config.league_name: config.league_id for config in FOOTBALL_LEAGUES.values()}
@@ -145,13 +156,11 @@ LEAGUE_SPORTS = {
     "nhl": "Hockey",
 }
 CORE_REFRESH_LEAGUES = ("NFL", "NCAAF", "CFL", "NBA", "NHL")
-RECOMMENDED_MINIMUM_EV = Decimal("0.005")
-RECOMMENDED_MINIMUM_IMPLIED_PROBABILITY = Decimal("0.30")
-RECOMMENDED_MINIMUM_AMERICAN_ODDS = -200
-RECOMMENDED_MAXIMUM_AMERICAN_ODDS = 300
-RECOMMENDED_MINIMUM_REFERENCE_BOOKS = 3
-OFFICIAL_RECOMMENDATION_PREFIX = "official-recommendation:v1:"
-OFFICIAL_STARTING_BANKROLL = Decimal("100")
+RECOMMENDED_MINIMUM_EV = OFFICIAL_MINIMUM_EV
+RECOMMENDED_MINIMUM_IMPLIED_PROBABILITY = OFFICIAL_MINIMUM_BREAK_EVEN_PROBABILITY
+RECOMMENDED_MINIMUM_AMERICAN_ODDS = OFFICIAL_MINIMUM_AMERICAN_ODDS
+RECOMMENDED_MAXIMUM_AMERICAN_ODDS = OFFICIAL_MAXIMUM_AMERICAN_ODDS
+RECOMMENDED_MINIMUM_REFERENCE_BOOKS = OFFICIAL_MINIMUM_REFERENCE_BOOKS
 _DEMO_SEED_LOCK = Lock()
 
 
@@ -2988,100 +2997,22 @@ def _recommended_value_opportunities(
     limit: int = 3,
     style: str = "Balanced",
 ) -> tuple[ValueOpportunity, ...]:
-    """Return the strongest bets that clear the product's recommendation policy."""
-    qualified: list[ValueOpportunity] = []
-    for item in _best_value_by_outcome(values):
-        event = event_map.get(item.quote.outcome.market.event_id)
-        if event is None or event.start_time <= as_of:
-            continue
-        if item.expected_value < RECOMMENDED_MINIMUM_EV:
-            continue
-        if implied_probability(item.quote.decimal_odds) < (
-            RECOMMENDED_MINIMUM_IMPLIED_PROBABILITY
-        ):
-            continue
-        american_odds = decimal_to_american(item.quote.decimal_odds)
-        if not (
-            RECOMMENDED_MINIMUM_AMERICAN_ODDS
-            <= american_odds
-            <= RECOMMENDED_MAXIMUM_AMERICAN_ODDS
-        ):
-            continue
-        if item.reference_books < RECOMMENDED_MINIMUM_REFERENCE_BOOKS:
-            continue
-        qualified.append(item)
-
-    if style == "Highest win chance":
-        ranking_key = lambda item: (  # noqa: E731
-            item.fair_probability,
-            item.expected_value,
-            Decimal(item.reference_books),
+    """Return the official risk-adjusted slate used by the refresh publisher."""
+    _ = style
+    return tuple(
+        recommendation.opportunity
+        for recommendation in select_official_recommendations(
+            values,
+            event_map,
+            as_of=as_of,
+            bankroll_units=OFFICIAL_STARTING_BANKROLL_UNITS,
+            limit=limit,
         )
-    elif style == "Highest EV":
-        ranking_key = lambda item: (  # noqa: E731
-            item.expected_value,
-            item.fair_probability,
-            Decimal(item.reference_books),
-        )
-    else:
-        ranking_key = lambda item: (  # noqa: E731
-            item.expected_value * (Decimal("0.75") + item.fair_probability),
-            item.reference_books,
-            item.expected_value,
-        )
-    qualified.sort(key=ranking_key, reverse=True)
-    return tuple(qualified[:limit])
-
-
-def _official_recommendation_note(opportunity: ValueOpportunity) -> str:
-    recommendation_id = stable_id(
-        "official-recommendation-v1",
-        opportunity.quote.outcome.market.event_id,
-        opportunity.quote.outcome.id,
     )
-    return f"{OFFICIAL_RECOMMENDATION_PREFIX}{recommendation_id}"
 
 
 def _official_bets(bets: tuple[TrackedBet, ...]) -> tuple[TrackedBet, ...]:
-    return tuple(
-        bet for bet in bets if bet.notes.startswith(OFFICIAL_RECOMMENDATION_PREFIX)
-    )
-
-
-def _record_official_recommendations(
-    recommendations: tuple[ValueOpportunity, ...],
-    event_map: dict[str, Event],
-    repository: QuoteRepository,
-    *,
-    recorded_at: datetime,
-) -> int:
-    """Persist each official symbolic pick once at its original offered price."""
-    existing_notes = {bet.notes for bet in _official_bets(repository.list_bets())}
-    recorded = 0
-    for opportunity in recommendations:
-        event = event_map.get(opportunity.quote.outcome.market.event_id)
-        if event is None:
-            continue
-        note = _official_recommendation_note(opportunity)
-        if note in existing_notes:
-            continue
-        repository.add_bet(
-            TrackedBet(
-                id=None,
-                created_at=recorded_at,
-                event_id=event.id,
-                event_name=event.name,
-                market_label=_market_label(opportunity.quote.outcome.market),
-                selection=_selection_label(opportunity.quote, event),
-                sportsbook=opportunity.quote.sportsbook.name,
-                decimal_odds=opportunity.quote.decimal_odds,
-                stake=Decimal("1"),
-                notes=note,
-            )
-        )
-        existing_notes.add(note)
-        recorded += 1
-    return recorded
+    return strategy_official_bets(bets)
 
 
 def _official_performance(bets: tuple[TrackedBet, ...]) -> OfficialPerformance:
@@ -3107,7 +3038,7 @@ def _official_performance(bets: tuple[TrackedBet, ...]) -> OfficialPerformance:
         pending=pending,
         units=units,
         roi=roi,
-        bankroll=OFFICIAL_STARTING_BANKROLL + units,
+        bankroll=OFFICIAL_STARTING_BANKROLL_UNITS + units,
     )
 
 
@@ -3617,8 +3548,6 @@ def _render_priority_value_bets(
     as_of: datetime,
     *,
     recommendation_values: tuple[ValueOpportunity, ...] | None = None,
-    repository: QuoteRepository | None = None,
-    record_official: bool = False,
 ) -> None:
     if not values:
         st.markdown(
@@ -3640,13 +3569,6 @@ def _render_priority_value_bets(
             as_of=as_of,
             style="Balanced",
         )
-        if record_official and repository is not None and recommended:
-            _record_official_recommendations(
-                recommended,
-                event_map,
-                repository,
-                recorded_at=as_of,
-            )
         if recommended:
             recommendation_rows = "".join(
                 _board_row_markup(
@@ -3802,8 +3724,6 @@ def _render_overview(
     odds_format: str,
     *,
     recommendation_values: tuple[ValueOpportunity, ...] | None = None,
-    repository: QuoteRepository | None = None,
-    record_official: bool = False,
 ) -> None:
     _render_priority_value_bets(
         values,
@@ -3812,8 +3732,6 @@ def _render_overview(
         odds_format,
         as_of,
         recommendation_values=recommendation_values,
-        repository=repository,
-        record_official=record_official,
     )
 
 
@@ -3897,21 +3815,28 @@ def _render_official_performance(
         )
         heading_column.markdown("### Official Track Record")
         note_column.caption(
-            "Symbolic 1-unit bets recorded when an official recommendation is published."
+            "Official paper bets published automatically after each successful odds refresh."
         )
         record_column, units_column, roi_column, bankroll_column, pending_column = st.columns(5)
         record_column.metric("Record", f"{performance.wins}-{performance.losses}")
         units_column.metric("Units", f"{performance.units:+.2f}u")
         roi_column.metric("ROI", f"{performance.roi:+.1%}")
-        bankroll_column.metric("Bankroll", f"{performance.bankroll:.2f}u")
+        bankroll_column.metric(
+            "Bankroll",
+            f"${performance.bankroll * OFFICIAL_UNIT_VALUE_DOLLARS:,.0f}",
+        )
         pending_column.metric("Pending", performance.pending)
+        st.caption(
+            "$10,000 starting bankroll · quarter-Kelly sizing · $25–$100 per pick · "
+            "up to three picks per refresh · one pick per event"
+        )
         if performance.voids:
             st.caption(f"{performance.voids} voided recommendation(s) excluded from ROI.")
 
         if not bets:
             st.caption(
-                "The first official recommendations will appear here after the owner publishes "
-                "a live slate."
+                "The first official recommendations will appear after the next successful "
+                "live-odds refresh."
             )
             return
 
@@ -3924,6 +3849,10 @@ def _render_official_performance(
                     "Pick": f"{bet.selection} · {bet.market_label}",
                     "Book": bet.sportsbook,
                     "Odds": format_odds(bet.decimal_odds, odds_format),
+                    "Wager": (
+                        f"{bet.stake:.2f}u "
+                        f"(${bet.stake * OFFICIAL_UNIT_VALUE_DOLLARS:,.0f})"
+                    ),
                     "Result": bet.status.value.title(),
                     "Units": (
                         f"{bet.profit_loss:+.2f}u"
@@ -4386,18 +4315,6 @@ def run() -> None:
             as_of,
             controls["odds_format"],
             recommendation_values=recommendation_values,
-            repository=repository,
-            record_official=(
-                is_admin
-                and bool(controls["refresh"])
-                and str(controls["mode"]) != "Demo"
-                and isinstance(
-                    st.session_state.get("last_refresh_diagnostics"),
-                    RefreshDiagnostics,
-                )
-                and st.session_state["last_refresh_diagnostics"].status
-                is RefreshResultStatus.SUCCESS
-            ),
         )
     elif active_view == "Games":
         comparison_books = sorted(
