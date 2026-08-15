@@ -41,7 +41,10 @@ def test_estimated_request_count_includes_only_missing_discovery() -> None:
             "americanfootball_nfl": 1,
             "basketball_nba": 2,
         },
-        market_catalog={"1": {"marketId": 1}},
+        market_catalog={
+            "1": {"marketId": 1, "sportId": 14},
+            "2": {"marketId": 2, "sportId": 11},
+        },
     )
     leagues = ("americanfootball_nfl", "basketball_nba")
 

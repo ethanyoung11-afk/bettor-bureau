@@ -9,7 +9,11 @@ from typing import Any
 
 from odds_scanner.domain import MarketKind
 from odds_scanner.providers.odds_api import FOOTBALL_LEAGUES
-from odds_scanner.providers.oddspapi import ODDSPAPI_SPORT_IDS, OddsPapiProvider
+from odds_scanner.providers.oddspapi import (
+    ODDSPAPI_PRIMARY_TOURNAMENT_IDS,
+    ODDSPAPI_SPORT_IDS,
+    OddsPapiProvider,
+)
 from odds_scanner.providers.playnow import PlayNowEventResolver
 from odds_scanner.refresh import (
     BudgetConfig,
@@ -123,7 +127,15 @@ def estimated_request_count(
         for key in league_keys
         if key not in provider.tournament_ids
     }
-    discovery_requests = len(missing_sports) + (0 if provider.market_catalog else 1)
+    cached_market_sports = {
+        int(raw.get("sportId", -1))
+        for raw in provider.market_catalog.values()
+        if isinstance(raw, dict)
+    }
+    required_market_sports = {ODDSPAPI_SPORT_IDS[key] for key in league_keys}
+    discovery_requests = len(missing_sports) + (
+        0 if required_market_sports <= cached_market_sports else 1
+    )
     odds_requests = (
         1
         if provider.include_all_bookmakers
@@ -161,12 +173,16 @@ def main() -> int:
     league_keys = _csv_setting("REFRESH_LEAGUES", DEFAULT_LEAGUE_KEYS)
     market_keys = _csv_setting("REFRESH_MARKETS", DEFAULT_MARKET_KEYS)
     request = build_refresh_request(league_keys, market_keys)
+    stored_tournaments = {
+        str(key): int(value)
+        for key, value in _json_object(settings.get("oddspapi_tournament_ids")).items()
+    }
     provider = OddsPapiProvider(
         api_key=api_key,
         include_all_bookmakers=False,
         tournament_ids={
-            str(key): int(value)
-            for key, value in _json_object(settings.get("oddspapi_tournament_ids")).items()
+            **stored_tournaments,
+            **ODDSPAPI_PRIMARY_TOURNAMENT_IDS,
         },
         market_catalog={
             str(key): dict(value)

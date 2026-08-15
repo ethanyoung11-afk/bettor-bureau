@@ -4,7 +4,12 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 from odds_scanner.domain import MarketKind, OutcomeSide
-from odds_scanner.providers.oddspapi import OddsPapiProvider, _full_game_market, _league_key
+from odds_scanner.providers.oddspapi import (
+    ODDSPAPI_PRIMARY_TOURNAMENT_IDS,
+    OddsPapiProvider,
+    _full_game_market,
+    _league_key,
+)
 
 
 class StubResponse:
@@ -259,13 +264,15 @@ def test_oddspapi_reuses_discovery_catalogs() -> None:
 
 
 def test_oddspapi_discovers_tournaments_for_each_requested_sport() -> None:
+    nba_market = {**_catalog()[0], "marketId": 111, "sportId": 11}
+    nhl_market = {**_catalog()[0], "marketId": 151, "sportId": 15}
     session = StubSession(
         {
             "tournaments": [
                 {"tournamentId": 132, "tournamentName": "NBA"},
                 {"tournamentId": 234, "tournamentName": "NHL"},
             ],
-            "markets": _catalog(),
+            "markets": [nba_market, nhl_market],
             "odds-by-tournaments": [],
         }
     )
@@ -280,6 +287,29 @@ def test_oddspapi_discovers_tournaments_for_each_requested_sport() -> None:
 
     tournament_calls = [params for endpoint, params in session.calls if endpoint == "tournaments"]
     assert [params["sportId"] for params in tournament_calls] == ["11", "15"]
+
+
+def test_oddspapi_refreshes_a_partial_market_catalog_for_new_sports() -> None:
+    nba_market = {**_catalog()[0], "marketId": 111, "sportId": 11}
+    session = StubSession(
+        {
+            "markets": [*_catalog(), nba_market],
+            "odds-by-tournaments": [],
+        }
+    )
+    provider = OddsPapiProvider(
+        api_key="test",
+        bookmaker_slugs=("pinnacle",),
+        bookmaker_cooldown_seconds=0,
+        session=session,  # type: ignore[arg-type]
+        tournament_ids={"basketball_nba": 132},
+        market_catalog={"201": _catalog()[0]},
+    )
+
+    provider.fetch_snapshot(["basketball_nba"], ["h2h"])
+
+    assert [call[0] for call in session.calls] == ["markets", "odds-by-tournaments"]
+    assert any(raw.get("sportId") == 11 for raw in provider.market_catalog.values())
 
 
 def test_oddspapi_normalizes_player_props_without_extra_requests() -> None:
@@ -364,6 +394,34 @@ def test_market_classifier_rejects_partial_and_team_totals() -> None:
     assert (
         _full_game_market(
             {
+                "marketName": "Regular Time Result",
+                "marketType": "1x2",
+                "period": "fulltime",
+                "playerProp": False,
+                "outcomes": [
+                    {"outcomeName": "1"},
+                    {"outcomeName": "X"},
+                    {"outcomeName": "2"},
+                ],
+            }
+        )
+        is None
+    )
+    assert (
+        _full_game_market(
+            {
+                "marketName": "Winner (incl. overtime)",
+                "marketType": "moneyline",
+                "period": "result",
+                "playerProp": False,
+                "outcomes": [{"outcomeName": "1"}, {"outcomeName": "2"}],
+            }
+        )
+        == "h2h"
+    )
+    assert (
+        _full_game_market(
+            {
                 "marketName": "Over Under First Half",
                 "marketType": "totals",
                 "period": "p1+p2",
@@ -379,3 +437,7 @@ def test_league_classifier_supports_initial_mvp_sports() -> None:
     assert _league_key("NCAAF") == "americanfootball_ncaaf"
     assert _league_key("NBA") == "basketball_nba"
     assert _league_key("NHL") == "icehockey_nhl"
+    assert _league_key("CFL, Preseason") is None
+    assert _league_key("NCAA, Regular Season") == "americanfootball_ncaaf"
+    assert ODDSPAPI_PRIMARY_TOURNAMENT_IDS["americanfootball_cfl"] == 790
+    assert ODDSPAPI_PRIMARY_TOURNAMENT_IDS["americanfootball_ncaaf"] == 27653

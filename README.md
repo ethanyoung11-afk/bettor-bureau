@@ -1,4 +1,4 @@
-# LineScout
+# Bettor Bureau
 
 A local sportsbook market-intelligence product for comparing prices, finding opportunities, and
 planning manual execution. It launches with a complete fictional demo market, so no API key is
@@ -15,7 +15,7 @@ Then open [http://localhost:8501](http://localhost:8501). Demo mode is selected 
 
 ### Open it like a Windows app
 
-Run `install_windows_shortcut.ps1` once. It creates a **LineScout** shortcut
+Run `install_windows_shortcut.ps1` once. It creates a **Bettor Bureau** shortcut
 in the Start menu and the current user's pinned-taskbar folder. The shortcut starts the local
 server in the background (if necessary) and opens the terminal in your default browser without
 showing a PowerShell window.
@@ -79,7 +79,8 @@ monthly reserve before making provider calls.
 4. Deploy `app.py` on Streamlit Community Cloud from that repository.
 5. Add `SHARED_APP`, `ADMIN_PASSWORD_HASH`, `ODDSPAPI_API_KEY`, and `DATABASE_URL` in
    Streamlit's encrypted secrets panel.
-6. Choose a memorable `linescout.streamlit.app` subdomain and share that URL.
+6. Choose a memorable Streamlit subdomain and share that URL. The current beta is hosted at
+   `linescout-bets.streamlit.app` until the public URL is renamed.
 
 The scheduled updater is in `.github/workflows/refresh-odds.yml`. Its free-plan defaults are four
 full refreshes per week, a 250-call monthly limit, and a 25-call owner reserve. Manual owner

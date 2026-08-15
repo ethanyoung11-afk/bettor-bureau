@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import html
@@ -15,7 +16,6 @@ from typing import Any
 from urllib.parse import urlparse
 
 import pandas as pd
-import requests
 import streamlit as st
 
 from odds_scanner.analytics import (
@@ -44,7 +44,10 @@ from odds_scanner.presentation import decimal_to_american, format_odds
 from odds_scanner.providers.base import OddsProvider
 from odds_scanner.providers.demo import DemoOddsProvider, generate_demo_snapshots
 from odds_scanner.providers.odds_api import FOOTBALL_LEAGUES, OddsApiProvider
-from odds_scanner.providers.oddspapi import OddsPapiProvider
+from odds_scanner.providers.oddspapi import (
+    ODDSPAPI_PRIMARY_TOURNAMENT_IDS,
+    OddsPapiProvider,
+)
 from odds_scanner.providers.playnow import PlayNowEventResolver
 from odds_scanner.refresh import (
     BudgetConfig,
@@ -147,13 +150,6 @@ RECOMMENDED_MINIMUM_IMPLIED_PROBABILITY = Decimal("0.30")
 RECOMMENDED_MINIMUM_AMERICAN_ODDS = -200
 RECOMMENDED_MAXIMUM_AMERICAN_ODDS = 300
 RECOMMENDED_MINIMUM_REFERENCE_BOOKS = 3
-TEAM_LOGO_FEEDS = {
-    "ncaaf": "football/college-football",
-    "nfl": "football/nfl",
-    "nba": "basketball/nba",
-    "nhl": "hockey/nhl",
-    "cfl": "football/cfl",
-}
 _DEMO_SEED_LOCK = Lock()
 
 
@@ -187,38 +183,37 @@ def _logo_key(value: str) -> str:
     return "".join(character for character in value.casefold() if character.isalnum())
 
 
+@lru_cache(maxsize=1)
+def _bundled_team_logo_catalogs() -> dict[str, dict[str, str]]:
+    """Read the bundled ESPN logo index without blocking a page render on HTTP."""
+    catalog_path = Path(__file__).resolve().parents[2] / "assets" / "team_logos.json"
+    try:
+        raw = json.loads(catalog_path.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        str(league).casefold(): {
+            str(name): str(url)
+            for name, url in logos.items()
+            if isinstance(name, str) and isinstance(url, str)
+        }
+        for league, logos in raw.items()
+        if isinstance(logos, dict)
+    }
+
+
 @lru_cache(maxsize=8)
 def _team_logo_catalog(league_id: str) -> dict[str, str]:
-    """Load team marks once per league and gracefully fall back when unavailable."""
-    feed = TEAM_LOGO_FEEDS.get(league_id.casefold())
-    if feed is None:
-        return {}
-    try:
-        response = requests.get(
-            f"https://site.api.espn.com/apis/site/v2/sports/{feed}/teams?limit=1000",
-            timeout=4,
-            headers={"User-Agent": "Mozilla/5.0"},
-        )
-        response.raise_for_status()
-        payload = response.json()
-        teams = payload["sports"][0]["leagues"][0]["teams"]
-    except (KeyError, IndexError, TypeError, ValueError, requests.RequestException):
-        return {}
+    return _bundled_team_logo_catalogs().get(league_id.casefold(), {})
 
-    catalog: dict[str, str] = {}
-    for entry in teams:
-        team = entry.get("team", {}) if isinstance(entry, dict) else {}
-        logos = team.get("logos", []) if isinstance(team, dict) else []
-        if not logos or not isinstance(logos[0], dict):
-            continue
-        logo_url = str(logos[0].get("href", "")).strip()
-        if not logo_url:
-            continue
-        for field in ("displayName", "shortDisplayName", "name"):
-            name = str(team.get(field, "")).strip()
-            if name:
-                catalog[_logo_key(name)] = logo_url
-    return catalog
+
+@lru_cache(maxsize=8)
+def _asset_data_uri(path: str) -> str:
+    asset = Path(path)
+    mime = "image/png" if asset.suffix.casefold() == ".png" else "image/svg+xml"
+    return f"data:{mime};base64,{base64.b64encode(asset.read_bytes()).decode('ascii')}"
 
 
 def _team_logo_url(team_name: str, league_id: str) -> str | None:
@@ -294,21 +289,76 @@ def _repository_for(database_url: str, sqlite_path: str) -> QuoteRepository:
     return SQLiteQuoteRepository(Path(sqlite_path))
 
 
+def _invalidate_repository_caches() -> None:
+    st.session_state.pop("runtime_settings_cache", None)
+    for key in tuple(st.session_state):
+        if str(key).startswith("admin_status_cache_"):
+            st.session_state.pop(key, None)
+
+
+def _cached_settings(repository: QuoteRepository, *, ttl_seconds: int = 60) -> dict[str, str]:
+    """Avoid repeated remote database round trips during ordinary widget reruns."""
+    now = datetime.now(UTC)
+    cached = st.session_state.get("runtime_settings_cache")
+    if (
+        isinstance(cached, tuple)
+        and len(cached) == 2
+        and isinstance(cached[0], datetime)
+        and isinstance(cached[1], dict)
+        and now - cached[0] < timedelta(seconds=ttl_seconds)
+    ):
+        return dict(cached[1])
+    settings = repository.load_settings()
+    st.session_state["runtime_settings_cache"] = (now, settings)
+    return dict(settings)
+
+
 @st.fragment(run_every=60)  # type: ignore[untyped-decorator]
 def _watch_for_shared_odds_updates(
     repository: QuoteRepository,
     provider_id: str,
 ) -> None:
     """Redraw the board only after the central worker stores a newer snapshot."""
+    now = datetime.now(UTC)
+    checked_key = f"shared_snapshot_checked_at_{provider_id}"
+    last_checked = st.session_state.get(checked_key)
+    if isinstance(last_checked, datetime) and now - last_checked < timedelta(seconds=55):
+        return
+    st.session_state[checked_key] = now
     latest = repository.api_usage_summary(
-        provider_id, as_of=datetime.now(UTC)
+        provider_id, as_of=now
     ).last_successful_refresh
     signature = latest.isoformat() if latest else "never"
     state_key = f"shared_snapshot_signature_{provider_id}"
     previous = st.session_state.get(state_key)
     st.session_state[state_key] = signature
     if previous is not None and previous != signature:
+        st.session_state.pop(f"view_snapshot_{provider_id}", None)
         st.rerun()
+
+
+def _load_view_snapshot(
+    repository: QuoteRepository,
+    provider_id: str,
+) -> tuple[tuple[Quote, ...], tuple[Event, ...]]:
+    """Reuse immutable view data until the shared refresh signature changes."""
+    state_key = f"view_snapshot_{provider_id}"
+    cached = st.session_state.get(state_key)
+    if isinstance(cached, tuple) and len(cached) == 2:
+        quotes, events = cached
+        if isinstance(quotes, tuple) and isinstance(events, tuple):
+            return quotes, events
+    snapshot = (
+        repository.load_latest_quotes(provider_id),
+        repository.load_events(),
+    )
+    st.session_state[state_key] = snapshot
+    return snapshot
+
+
+def _invalidate_view_snapshot(provider_id: str) -> None:
+    st.session_state.pop(f"view_snapshot_{provider_id}", None)
+    st.session_state.pop(f"shared_snapshot_checked_at_{provider_id}", None)
 
 
 def _oddspapi_requests_used(
@@ -317,7 +367,7 @@ def _oddspapi_requests_used(
     as_of: datetime | None = None,
 ) -> int:
     effective_time = as_of or datetime.now(UTC)
-    settings = repository.load_settings()
+    settings = _cached_settings(repository)
     if settings.get("oddspapi_usage_month") != effective_time.strftime("%Y-%m"):
         return 0
     try:
@@ -329,7 +379,7 @@ def _oddspapi_requests_used(
 def _oddspapi_credit_limit(repository: QuoteRepository) -> int:
     configured = _local_secret("ODDSPAPI_MONTHLY_CREDIT_LIMIT")
     if not configured:
-        configured = repository.load_settings().get("oddspapi_monthly_credit_limit", "")
+        configured = _cached_settings(repository).get("oddspapi_monthly_credit_limit", "")
     try:
         return max(1, int(configured))
     except ValueError:
@@ -347,6 +397,7 @@ def _record_oddspapi_requests(
     credit_limit = _oddspapi_credit_limit(repository)
     repository.save_setting("oddspapi_usage_month", effective_time.strftime("%Y-%m"))
     repository.save_setting("oddspapi_requests_used", str(used))
+    _invalidate_repository_caches()
     return used, max(0, credit_limit - used)
 
 
@@ -386,8 +437,20 @@ def _render_refresh_admin_status(
     mode: str,
 ) -> None:
     provider_id = _provider_id(mode)
-    counts = repository.opportunity_counts(provider_id)
-    usage = repository.api_usage_summary(provider_id, as_of=datetime.now(UTC))
+    now = datetime.now(UTC)
+    cache_key = f"admin_status_cache_{provider_id}"
+    cached = st.session_state.get(cache_key)
+    if (
+        isinstance(cached, tuple)
+        and len(cached) == 3
+        and isinstance(cached[0], datetime)
+        and now - cached[0] < timedelta(seconds=60)
+    ):
+        counts, usage = cached[1], cached[2]
+    else:
+        counts = repository.opportunity_counts(provider_id)
+        usage = repository.api_usage_summary(provider_id, as_of=now)
+        st.session_state[cache_key] = (now, counts, usage)
     last_refresh = usage.last_successful_refresh
     last_refresh_label = (
         last_refresh.astimezone().strftime("%I:%M %p").lstrip("0")
@@ -910,14 +973,18 @@ def _inject_theme() -> None:
             font-size:2rem !important; line-height:1.15 !important;
             margin:0 !important; padding:0 !important;
         }
-        .st-key-linescout_brand {
+        .st-key-bettor_bureau_brand {
             min-height:52px; display:flex; align-items:center;
         }
-        .st-key-linescout_brand [data-testid="stImage"] {
-            margin:0; width:245px;
+        .bettor-bureau-lockup {
+            display:flex; align-items:center; gap:11px; min-width:0;
         }
-        .st-key-linescout_brand [data-testid="stImage"] img {
-            display:block; width:245px; max-width:100%; height:auto;
+        .bettor-bureau-lockup img {
+            display:block; width:45px; height:45px; object-fit:contain; flex:0 0 45px;
+        }
+        .bettor-bureau-lockup strong {
+            color:#f5f7fa; font-size:1.65rem; line-height:1; letter-spacing:-.045em;
+            white-space:nowrap;
         }
         .ev-page-subtitle { margin-top:.25rem; }
         [data-testid="stVerticalBlock"] { gap:.48rem; }
@@ -1006,6 +1073,10 @@ def _inject_theme() -> None:
         }
         .ev-update-status { font-size:.75rem; white-space:nowrap; }
         .ev-update-status .ev-freshness-state { display:none; }
+        .st-key-header_odds_format { white-space:nowrap; }
+        .st-key-header_odds_format [data-testid="stCheckbox"] label {
+            gap:8px; color:#c6d0dc; font-size:.76rem; font-weight:750;
+        }
         .st-key-header_refresh button {
             width:34px; min-height:34px; padding:0; border:0; background:transparent;
         }
@@ -1193,31 +1264,34 @@ def _inject_theme() -> None:
             .games-team-logos { display:none; }
             .games-matchup-copy strong { white-space:normal; }
             .games-event-body { padding:.6rem; }
-            .st-key-linescout_brand { min-height:46px; }
-            .st-key-linescout_brand [data-testid="stImage"],
-            .st-key-linescout_brand [data-testid="stImage"] img { width:210px; }
+            .st-key-bettor_bureau_brand { min-height:46px; }
+            .bettor-bureau-lockup { gap:8px; }
+            .bettor-bureau-lockup img { width:38px; height:38px; flex-basis:38px; }
+            .bettor-bureau-lockup strong { font-size:1.35rem; }
             .st-key-page_header [data-testid="stHorizontalBlock"]:has(
-                .st-key-linescout_brand
+                .st-key-bettor_bureau_brand
             ) {
-                display:grid !important; grid-template-columns:minmax(0,1fr) 38px;
+                display:grid !important; grid-template-columns:minmax(0,1fr) 184px;
                 align-items:center; gap:2px 8px;
             }
             .st-key-page_header [data-testid="stHorizontalBlock"]:has(
-                .st-key-linescout_brand
+                .st-key-bettor_bureau_brand
             ) > [data-testid="stColumn"] {
                 width:auto !important; min-width:0 !important; flex:unset !important;
             }
             .st-key-page_header [data-testid="stHorizontalBlock"]:has(
-                .st-key-linescout_brand
-            ) > [data-testid="stColumn"]:nth-child(1) { grid-column:1; grid-row:1; }
-            .st-key-page_header [data-testid="stHorizontalBlock"]:has(
-                .st-key-linescout_brand
-            ) > [data-testid="stColumn"]:nth-child(2) {
-                grid-column:1 / -1; grid-row:2;
+                .st-key-bettor_bureau_brand
+            ) > [data-testid="stColumn"]:nth-child(1) {
+                grid-column:1 / -1; grid-row:1;
             }
             .st-key-page_header [data-testid="stHorizontalBlock"]:has(
-                .st-key-linescout_brand
-            ) > [data-testid="stColumn"]:nth-child(3) { grid-column:2; grid-row:1; }
+                .st-key-bettor_bureau_brand
+            ) > [data-testid="stColumn"]:nth-child(2) {
+                grid-column:1; grid-row:2;
+            }
+            .st-key-page_header [data-testid="stHorizontalBlock"]:has(
+                .st-key-bettor_bureau_brand
+            ) > [data-testid="stColumn"]:nth-child(3) { grid-column:2; grid-row:2; }
             .ev-page-subtitle { font-size:.82rem; }
             .ev-update-status {
                 justify-content:flex-start; text-align:left; margin:.05rem 0 .2rem;
@@ -1306,80 +1380,103 @@ def _inject_theme() -> None:
     )
 
 
-def _render_page_header(
+def _render_page_header() -> Any:
+    with st.container(key="page_header"):
+        title_column, status_column, format_column = st.columns(
+            [6.4, 1.25, 1.35], vertical_alignment="center"
+        )
+        with title_column:
+            brand_mark = (
+                Path(__file__).resolve().parents[2]
+                / "assets"
+                / "bettor-bureau-mark.png"
+            )
+            with st.container(key="bettor_bureau_brand"):
+                st.markdown(
+                    '<div class="bettor-bureau-lockup">'
+                    f'<img src="{_asset_data_uri(str(brand_mark))}" alt="">'
+                    "<strong>Bettor Bureau</strong></div>",
+                    unsafe_allow_html=True,
+                )
+        with status_column:
+            status_container = st.container(key="header_odds_status")
+        with format_column, st.container(key="header_odds_format"):
+            decimal_odds = st.toggle(
+                "Decimal odds",
+                value=st.session_state.get("odds_format", "American") == "Decimal",
+                key="decimal_odds",
+                help="Switch off for American odds.",
+            )
+            st.session_state["odds_format"] = (
+                "Decimal" if decimal_odds else "American"
+            )
+    return status_container
+
+
+def _queue_owner_refresh() -> None:
+    st.session_state["owner_refresh_requested"] = True
+
+
+def _render_owner_panel(
     repository: QuoteRepository,
     mode: str,
     *,
     is_admin: bool,
-) -> tuple[Any, bool]:
-    refresh = False
+) -> None:
     shared_mode = _local_secret("SHARED_APP").casefold() in {"1", "true", "yes", "on"}
-    with st.container(key="page_header"):
-        title_column, status_column, admin_column = st.columns(
-            [6.2, 1.35, 0.72], vertical_alignment="center"
-        )
-        with title_column:
-            brand_lockup = (
-                Path(__file__).resolve().parents[2] / "assets" / "linescout-lockup.png"
+    panel = st.container(key="owner_panel").expander("Owner controls", expanded=False)
+    with panel:
+        if is_admin:
+            used = _oddspapi_requests_used(repository)
+            credit_limit = _oddspapi_credit_limit(repository)
+            remaining = max(0, credit_limit - used)
+            st.markdown("#### Odds administration")
+            st.metric("API calls remaining this month", remaining)
+            st.progress(
+                min(1.0, used / credit_limit),
+                text=f"{used} of {credit_limit} calls used",
             )
-            with st.container(key="linescout_brand"):
-                st.image(str(brand_lockup), width=245)
-        with status_column:
-            status_container = st.container(key="header_odds_status")
-        with admin_column, st.container(key="header_admin"):
-            if is_admin:
-                with st.popover("Admin", width="stretch"):
-                    used = _oddspapi_requests_used(repository)
-                    credit_limit = _oddspapi_credit_limit(repository)
-                    remaining = max(0, credit_limit - used)
-                    st.markdown("#### Odds administration")
-                    st.metric("API calls remaining this month", remaining)
-                    st.progress(
-                        min(1.0, used / credit_limit),
-                        text=f"{used} of {credit_limit} calls used",
-                    )
-                    st.caption(
-                        "Only the owner and the central scheduled updater can spend API calls."
-                    )
-                    refresh = st.button(
-                        "Refresh latest odds",
-                        icon=":material/refresh:",
-                        type="primary",
-                        width="stretch",
-                        key="admin_refresh_odds",
-                    )
-                    st.divider()
-                    _render_refresh_admin_status(repository, mode)
-                    if shared_mode and st.button(
-                        "Return to viewer mode",
-                        width="stretch",
-                        key="admin_sign_out",
-                    ):
-                        st.session_state["owner_authenticated"] = False
-                        st.session_state.pop("owner_password", None)
-                        st.rerun()
-            else:
-                with st.popover("Owner", width="stretch"):
-                    st.caption("Owner sign-in is required to refresh odds or view API usage.")
-                    password = st.text_input(
-                        "Owner password",
-                        type="password",
-                        key="owner_password",
-                    )
-                    if st.button(
-                        "Unlock admin panel",
-                        width="stretch",
-                        key="owner_unlock",
-                    ):
-                        if _password_matches(
-                            password,
-                            _local_secret("ADMIN_PASSWORD_HASH"),
-                        ):
-                            st.session_state["owner_authenticated"] = True
-                            st.rerun()
-                        else:
-                            st.error("That owner password is not correct.")
-    return status_container, refresh
+            st.caption(
+                "Only the owner and the central scheduled updater can spend API calls."
+            )
+            st.button(
+                "Refresh latest odds",
+                icon=":material/refresh:",
+                type="primary",
+                width="stretch",
+                key="admin_refresh_odds",
+                on_click=_queue_owner_refresh,
+            )
+            st.divider()
+            _render_refresh_admin_status(repository, mode)
+            if shared_mode and st.button(
+                "Return to viewer mode",
+                width="stretch",
+                key="admin_sign_out",
+            ):
+                st.session_state["owner_authenticated"] = False
+                st.session_state.pop("owner_password", None)
+                st.rerun()
+        else:
+            st.caption("Owner sign-in is required to refresh odds or view API usage.")
+            password = st.text_input(
+                "Owner password",
+                type="password",
+                key="owner_password",
+            )
+            if st.button(
+                "Unlock owner controls",
+                width="stretch",
+                key="owner_unlock",
+            ):
+                if _password_matches(
+                    password,
+                    _local_secret("ADMIN_PASSWORD_HASH"),
+                ):
+                    st.session_state["owner_authenticated"] = True
+                    st.rerun()
+                else:
+                    st.error("That owner password is not correct.")
 
 
 def _render_header_dashboard(
@@ -1490,19 +1587,23 @@ def _render_odds_status(
     last_refresh = max(quote.observed_at for quote in quotes)
     age = _elapsed_compact_label(last_refresh, as_of)
     target.markdown(
-        f'<div class="ev-update-status"><span>Last updated: <strong>{age}</strong></span></div>',
+        f'<div class="ev-update-status"><span>Odds last refreshed: '
+        f'<strong>{age}</strong></span></div>',
         unsafe_allow_html=True,
     )
 
 
 def _load_defaults(repository: QuoteRepository) -> None:
-    stored = repository.load_settings()
+    if st.session_state.get("terminal_defaults_loaded"):
+        return
+    stored = _cached_settings(repository)
     st.session_state.setdefault("bankroll", stored.get("bankroll", "1000"))
     st.session_state.setdefault(
         "freshness_minutes", int(stored.get("freshness_minutes", "5"))
     )
     st.session_state.setdefault("min_roi", float(stored.get("min_roi", "0.25")))
     st.session_state.setdefault("min_ev", float(stored.get("min_ev", "2.0")))
+    st.session_state.setdefault("odds_format", "American")
     st.session_state["terminal_defaults_loaded"] = True
 
 
@@ -1522,8 +1623,8 @@ def _sidebar(
     is_admin: bool,
 ) -> dict[str, Any]:
     with st.sidebar:
-        st.markdown("### ADVANTAGE TERMINAL")
-        st.caption("BC sportsbook value scanner")
+        st.markdown("### BETTOR BUREAU")
+        st.caption("Sports-market intelligence")
         saved_oddspapi_key = _local_secret("ODDSPAPI_API_KEY")
         if is_admin:
             data_mode = st.selectbox(
@@ -1538,11 +1639,11 @@ def _sidebar(
         api_key = ""
         regions = "us"
         if data_mode == "OddsPapi Free":
-            requests_used = _oddspapi_requests_used(repository)
-            credit_limit = _oddspapi_credit_limit(repository)
-            requests_remaining = max(0, credit_limit - requests_used)
             api_key = saved_oddspapi_key
             if is_admin:
+                requests_used = _oddspapi_requests_used(repository)
+                credit_limit = _oddspapi_credit_limit(repository)
+                requests_remaining = max(0, credit_limit - requests_used)
                 st.caption(f"Connected · {requests_remaining} estimated credits remaining")
                 with st.expander("Feed account & usage", expanded=False):
                     api_key = st.text_input(
@@ -1596,12 +1697,19 @@ def _sidebar(
                 step=0.1,
                 key="min_roi",
             )
-            odds_format = st.radio("Odds", ["American", "Decimal"], horizontal=True)
+            odds_format = str(st.session_state.get("odds_format", "American"))
         supported_leagues = list(LEAGUE_ICONS)
         supported_markets = ["Moneyline", "Spread", "Total"]
         if data_mode in {"Demo", "OddsPapi Free"}:
             supported_markets.append("Player props")
         if is_admin:
+            league_defaults_key = f"refresh_league_defaults_v2_{_provider_id(data_mode)}"
+            if not st.session_state.get(league_defaults_key):
+                for league in supported_leagues:
+                    st.session_state[
+                        f"refresh_league_{_provider_id(data_mode)}_{league}"
+                    ] = True
+                st.session_state[league_defaults_key] = True
             with st.expander("Odds Data", expanded=False):
                 st.caption("Enabled sports")
                 active_leagues = [
@@ -1609,7 +1717,6 @@ def _sidebar(
                     for league in supported_leagues
                     if st.checkbox(
                         f"{LEAGUE_ICONS[league]} {league}",
-                        value=league in CORE_REFRESH_LEAGUES,
                         key=f"refresh_league_{_provider_id(data_mode)}_{league}",
                     )
                 ]
@@ -1628,7 +1735,6 @@ def _sidebar(
                         ),
                     )
                 ]
-                _render_refresh_admin_status(repository, data_mode)
         else:
             active_leagues = supported_leagues
             active_markets = supported_markets
@@ -2078,12 +2184,69 @@ def _render_event_board(
     if not available_events:
         st.info("No saved upcoming events match the selected leagues. Refresh the latest odds.")
         return
-    quotes_by_event: dict[str, tuple[Quote, ...]] = {
-        event.id: tuple(
-            quote for quote in quotes if quote.outcome.market.event_id == event.id
-        )
-        for event in available_events
+    grouped_quotes: dict[str, list[Quote]] = {
+        event.id: [] for event in available_events
     }
+    for quote in quotes:
+        event_quotes = grouped_quotes.get(quote.outcome.market.event_id)
+        if event_quotes is not None:
+            event_quotes.append(quote)
+    quotes_by_event = {
+        event_id: tuple(event_quotes)
+        for event_id, event_quotes in grouped_quotes.items()
+    }
+
+    # Reset the older conflicting Games filters once. Previously a saved NFL league
+    # could remain active while the sport control visibly said "All Sports".
+    if not st.session_state.get("games_filter_defaults_v2"):
+        st.session_state["games_sport"] = "All Sports"
+        st.session_state["games_league"] = "All leagues"
+        st.session_state["games_date"] = "All upcoming"
+        st.session_state["games_filter_defaults_v2"] = True
+
+    sport_counts: dict[str, int] = {}
+    for event in available_events:
+        sport = LEAGUE_SPORTS.get(event.league_id, "Other")
+        sport_counts[sport] = sport_counts.get(sport, 0) + 1
+    sport_options = [
+        "All Sports",
+        *sorted(sport_counts),
+    ]
+    if st.session_state.get("games_sport") not in sport_options:
+        st.session_state["games_sport"] = "All Sports"
+    with st.container(key="games_sport_filter"):
+        selected_sport = st.segmented_control(
+            "Sport",
+            sport_options,
+            default="All Sports",
+            key="games_sport",
+            label_visibility="collapsed",
+            format_func=lambda sport: (
+                f"All Sports ({len(available_events)})"
+                if sport == "All Sports"
+                else f"{sport} ({sport_counts[sport]})"
+            ),
+        ) or "All Sports"
+
+    league_events = (
+        available_events
+        if selected_sport == "All Sports"
+        else [
+            event
+            for event in available_events
+            if LEAGUE_SPORTS.get(event.league_id, "Other") == selected_sport
+        ]
+    )
+    league_options = [
+        "All leagues",
+        *sorted({event.league_id.upper() for event in league_events}),
+    ]
+    league_counts: dict[str, int] = {}
+    for event in league_events:
+        league = event.league_id.upper()
+        league_counts[league] = league_counts.get(league, 0) + 1
+    if st.session_state.get("games_league") not in league_options:
+        st.session_state["games_league"] = "All leagues"
     with st.container(key="games_filters"):
         search_column, league_column, date_column = st.columns(
             [2.2, 1, 1], vertical_alignment="bottom"
@@ -2094,15 +2257,16 @@ def _render_event_board(
                 placeholder="Search games, teams, or players…",
                 key="games_search",
             ).strip().casefold()
-        league_options = [
-            "All leagues",
-            *sorted({event.league_id.upper() for event in available_events}),
-        ]
         with league_column:
             selected_league = st.selectbox(
                 "League",
                 league_options,
                 key="games_league",
+                format_func=lambda league: (
+                    f"All leagues ({len(league_events)})"
+                    if league == "All leagues"
+                    else f"{league} ({league_counts[league]})"
+                ),
             )
         with date_column:
             selected_date = st.selectbox(
@@ -2111,32 +2275,17 @@ def _render_event_board(
                 key="games_date",
             )
 
-    sport_options = [
-        "All Sports",
-        *sorted(
-            {LEAGUE_SPORTS.get(event.league_id, "Other") for event in available_events}
-        ),
-    ]
-    with st.container(key="games_sport_filter"):
-        selected_sport = st.segmented_control(
-            "Sport",
-            sport_options,
-            default="All Sports",
-            key="games_sport",
-            label_visibility="collapsed",
-        ) or "All Sports"
-
     local_today = datetime.now().astimezone().date()
     filtered_events: list[Event] = []
     for event in available_events:
-        event_quotes = quotes_by_event[event.id]
+        event_quote_rows = quotes_by_event[event.id]
         searchable = " ".join(
             [
                 event.name,
                 event.home.name,
                 event.away.name,
                 event.league_id,
-                *(_selection_label(quote, event) for quote in event_quotes),
+                *(_selection_label(quote, event) for quote in event_quote_rows),
             ]
         ).casefold()
         event_date = event.start_time.astimezone().date()
@@ -2252,6 +2401,7 @@ def _save_sportsbook_preferences(
         _sportsbook_preferences_key(mode),
         json.dumps(selected, separators=(",", ":")),
     )
+    _invalidate_repository_caches()
     _set_ev_page(0)
 
 
@@ -2398,7 +2548,7 @@ def _render_ev_filter_bar(
         )
         if persist_preferences and not st.session_state.get(preference_session_key):
             saved_books = _decode_sportsbook_preferences(
-                repository.load_settings().get(_sportsbook_preferences_key(mode)),
+                _cached_settings(repository).get(_sportsbook_preferences_key(mode)),
                 tuple(available_books),
             )
             for book in available_books:
@@ -2456,7 +2606,7 @@ def _render_ev_filter_bar(
                     args=(
                         tuple(available_books),
                         mode,
-                        False,
+                        True,
                         repository if persist_preferences else None,
                     ),
                     width="stretch",
@@ -3697,9 +3847,13 @@ def _render_launch_disclosures(mode: str) -> None:
 
 
 def run() -> None:
-    app_icon = Path(__file__).resolve().parents[2] / "assets" / "linescout-app-icon.png"
+    app_icon = (
+        Path(__file__).resolve().parents[2]
+        / "assets"
+        / "bettor-bureau-app-icon.png"
+    )
     st.set_page_config(
-        page_title="LineScout",
+        page_title="Bettor Bureau",
         page_icon=str(app_icon),
         layout="wide",
         initial_sidebar_state="collapsed",
@@ -3718,7 +3872,10 @@ def run() -> None:
     selected_provider_id = _provider_id(selected_source)
     if selected_provider_id != "demo":
         _watch_for_shared_odds_updates(repository, selected_provider_id)
-    preload_quotes = repository.load_latest_quotes(selected_provider_id)
+    preload_quotes, preload_events = _load_view_snapshot(
+        repository,
+        selected_provider_id,
+    )
     available_books = sorted(
         {
             quote.sportsbook.name
@@ -3728,12 +3885,10 @@ def run() -> None:
         key=_book_sort_key,
     )
     controls = _sidebar(repository, is_admin=is_admin)
-    header_odds_status, header_refresh = _render_page_header(
-        repository,
-        str(controls["mode"]),
-        is_admin=is_admin,
-    )
-    controls["refresh"] = bool(controls["refresh"] or header_refresh)
+    header_odds_status = _render_page_header()
+    owner_refresh = bool(st.session_state.pop("owner_refresh_requested", False))
+    controls["refresh"] = bool(controls["refresh"] or owner_refresh)
+    controls["odds_format"] = str(st.session_state.get("odds_format", "American"))
 
     refresh_notice = st.session_state.pop("refresh_notice", None)
     if refresh_notice:
@@ -3757,8 +3912,14 @@ def run() -> None:
             if controls["mode"] == "Demo":
                 provider = DemoOddsProvider()
             elif controls["mode"] == "OddsPapi Free":
-                stored = repository.load_settings()
+                stored = _cached_settings(repository)
                 playnow_resolver = PlayNowEventResolver()
+                stored_tournaments = {
+                    str(key): int(value)
+                    for key, value in _json_object(
+                        stored.get("oddspapi_tournament_ids")
+                    ).items()
+                }
                 provider = OddsPapiProvider(
                     api_key=controls["api_key"],
                     bookmaker_slugs=tuple(
@@ -3767,10 +3928,8 @@ def run() -> None:
                         if book in ODDSPAPI_BOOK_SLUGS
                     ),
                     tournament_ids={
-                        str(key): int(value)
-                        for key, value in _json_object(
-                            stored.get("oddspapi_tournament_ids")
-                        ).items()
+                        **stored_tournaments,
+                        **ODDSPAPI_PRIMARY_TOURNAMENT_IDS,
                     },
                     market_catalog={
                         str(key): dict(value)
@@ -3820,21 +3979,22 @@ def run() -> None:
                     )
                     _record_oddspapi_requests(repository, provider.request_count)
                 st.session_state["refresh_notice"] = _diagnostic_message(diagnostics)
+                _invalidate_view_snapshot(provider.provider_id)
                 st.rerun()
             except (KeyError, ValueError) as exc:
                 st.error(str(exc))
 
     as_of = datetime.now(UTC)
     provider_id = _provider_id(controls["mode"])
-    latest_quotes = (
-        preload_quotes
-        if provider_id == selected_provider_id
-        else repository.load_latest_quotes(provider_id)
-    )
+    if provider_id == selected_provider_id:
+        latest_quotes = preload_quotes
+        stored_events = preload_events
+    else:
+        latest_quotes, stored_events = _load_view_snapshot(repository, provider_id)
     quoted_event_ids = {quote.outcome.market.event_id for quote in latest_quotes}
     all_events = tuple(
         event
-        for event in repository.load_events()
+        for event in stored_events
         if event.start_time > as_of
         and event.id in quoted_event_ids
     )
@@ -3918,4 +4078,9 @@ def run() -> None:
             is_admin=is_admin,
         )
 
+    _render_owner_panel(
+        repository,
+        str(controls["mode"]),
+        is_admin=is_admin,
+    )
     _render_launch_disclosures(str(controls["mode"]))

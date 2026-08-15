@@ -38,6 +38,16 @@ ODDSPAPI_SPORT_IDS: Mapping[str, int] = {
     "basketball_nba": 11,
     "icehockey_nhl": 15,
 }
+# OddsPapi exposes several similarly named preseason and postseason tournaments.
+# Keep the primary competitions explicit so an arbitrary catalog order cannot replace
+# CFL/NCAAF with an inactive sibling tournament.
+ODDSPAPI_PRIMARY_TOURNAMENT_IDS: Mapping[str, int] = {
+    "americanfootball_nfl": 31,
+    "americanfootball_ncaaf": 27653,
+    "americanfootball_cfl": 790,
+    "basketball_nba": 132,
+    "icehockey_nhl": 234,
+}
 ODDSPAPI_FOOTBALL_MARKETS = {*FOOTBALL_MARKETS, "player_props"}
 
 PLAYER_PROP_LABELS: Mapping[str, str] = {
@@ -89,13 +99,13 @@ def _league_key(tournament_name: str) -> str | None:
         or ("national-football-league" in token and "women" not in token)
     ):
         return "americanfootball_nfl"
-    if token == "cfl" or token.startswith("cfl-") or "canadian-football-league" in token:
+    if token == "cfl" or token == "canadian-football-league":
         return "americanfootball_cfl"
     if (
         token == "ncaaf"
-        or token.startswith("ncaa")
+        or token == "ncaa-regular-season"
         or "college-football" in token
-        or "ncaa-football" in token
+        or token == "ncaa-football"
     ):
         return "americanfootball_ncaaf"
     if token == "nba" or "national-basketball-association" in token:
@@ -117,6 +127,15 @@ def _full_game_market(raw_market: Mapping[str, Any]) -> str | None:
     if market_type in {"moneyline", "h2h", "1x2"} or any(
         token in name for token in ("moneyline", "match-winner", "full-time-result")
     ):
+        outcome_tokens = {
+            canonical_token(str(outcome.get("outcomeName", "")))
+            for outcome in raw_market.get("outcomes", [])
+            if isinstance(outcome, Mapping)
+        }
+        if market_type == "1x2" or outcome_tokens & {"x", "draw", "tie"}:
+            return None
+        if outcome_tokens and len(outcome_tokens) != 2:
+            return None
         return "h2h"
     if market_type in {"spread", "spreads", "handicap", "point-spread"}:
         return "spreads"
@@ -242,7 +261,7 @@ class OddsPapiProvider:
             raise OddsPapiError("Enable at least one sportsbook before refreshing.")
 
         self._ensure_tournaments(requested_leagues)
-        self._ensure_market_catalog()
+        self._ensure_market_catalog(requested_leagues)
         tournament_ids = [str(self.tournament_ids[key]) for key in requested_leagues]
         odds_params: dict[str, object] = {
             "tournamentIds": ",".join(tournament_ids),
@@ -319,8 +338,14 @@ class OddsPapiProvider:
             labels = [FOOTBALL_LEAGUES[key].league_name for key in still_missing]
             raise OddsPapiError(f"OddsPapi did not return tournament IDs for: {', '.join(labels)}")
 
-    def _ensure_market_catalog(self) -> None:
-        if self.market_catalog:
+    def _ensure_market_catalog(self, league_keys: Sequence[str]) -> None:
+        required_sport_ids = {ODDSPAPI_SPORT_IDS[key] for key in league_keys}
+        cached_sport_ids = {
+            int(raw.get("sportId", -1))
+            for raw in self.market_catalog.values()
+            if isinstance(raw, Mapping)
+        }
+        if required_sport_ids <= cached_sport_ids:
             return
         payload = self._request("markets", {"language": "en"})
         for raw in self._event_list(payload):
@@ -329,8 +354,17 @@ class OddsPapiProvider:
             market_id = raw.get("marketId")
             if market_id is not None:
                 self.market_catalog[str(market_id)] = dict(raw)
-        if not self.market_catalog:
-            raise OddsPapiError("OddsPapi returned no American football market definitions.")
+        loaded_sport_ids = {
+            int(raw.get("sportId", -1))
+            for raw in self.market_catalog.values()
+            if isinstance(raw, Mapping)
+        }
+        missing_sports = required_sport_ids - loaded_sport_ids
+        if missing_sports:
+            raise OddsPapiError(
+                "OddsPapi returned no market definitions for sport IDs: "
+                + ", ".join(str(sport_id) for sport_id in sorted(missing_sports))
+            )
 
     def _request(self, endpoint: str, params: Mapping[str, object]) -> object:
         request_params = {"apiKey": self.api_key}
