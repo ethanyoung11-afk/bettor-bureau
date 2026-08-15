@@ -117,6 +117,8 @@ SPORTSBOOK_DOMAINS = {
     "Pinnacle": ("pinnacle.com",),
 }
 ODDSPAPI_FREE_CREDITS = 250
+EV_INITIAL_BATCH_SIZE = 10
+EV_BATCH_SIZE = 10
 ODDSPAPI_BOOK_SLUGS = {
     "PlayNow": "playnow",
     "Betway": "betway",
@@ -1340,8 +1342,13 @@ def _inject_theme() -> None:
             background:#063d26; color:#37df82; font-size:.8rem;
         }
         .board-pagination-note { color:#a9b4c2; font-size:.7rem; text-align:right; }
+        .st-key-load_more_ev {
+            clear:both; position:relative; z-index:1; max-width:240px;
+            margin:1rem auto 1.5rem !important; padding-top:.25rem;
+        }
+        .st-key-load_more_ev [data-testid="stButton"] { width:100%; }
         .st-key-load_more_ev button {
-            min-height:38px; border-color:#237346; color:#54e596;
+            width:100%; min-height:40px; border-color:#237346; color:#54e596;
             background:#0b1c16; font-weight:750;
         }
         @media (max-width: 1320px) {
@@ -2656,11 +2663,14 @@ def _reset_ev_filters() -> None:
 
 def _set_ev_page(page: int) -> None:
     st.session_state["ev_page"] = max(0, page)
-    st.session_state["ev_visible_count"] = 20
+    st.session_state["ev_visible_count"] = EV_INITIAL_BATCH_SIZE
 
 
-def _show_more_ev_bets(increment: int = 20) -> None:
-    current = max(20, int(st.session_state.get("ev_visible_count", 20)))
+def _show_more_ev_bets(increment: int = EV_BATCH_SIZE) -> None:
+    current = max(
+        EV_INITIAL_BATCH_SIZE,
+        int(st.session_state.get("ev_visible_count", EV_INITIAL_BATCH_SIZE)),
+    )
     st.session_state["ev_visible_count"] = current + increment
 
 
@@ -3174,6 +3184,23 @@ def _quotes_for_opportunity(
     )
 
 
+def _quotes_by_outcome(quotes: tuple[Quote, ...]) -> dict[str, tuple[Quote, ...]]:
+    """Index and deduplicate prices once for fast board-row comparisons."""
+    grouped: dict[str, list[Quote]] = {}
+    for quote in quotes:
+        grouped.setdefault(quote.outcome.id, []).append(quote)
+    return {
+        outcome_id: tuple(
+            sorted(
+                deduplicate_quotes(tuple(outcome_quotes)),
+                key=lambda quote: (quote.decimal_odds, quote.sportsbook.name),
+                reverse=True,
+            )
+        )
+        for outcome_id, outcome_quotes in grouped.items()
+    }
+
+
 def _market_range_label(
     opportunity: ValueOpportunity,
     quotes: tuple[Quote, ...],
@@ -3554,6 +3581,7 @@ def _board_row_markup(
     as_of: datetime,
     *,
     recommended: bool,
+    quotes_by_outcome: dict[str, tuple[Quote, ...]] | None = None,
 ) -> str:
     event = event_map[opportunity.quote.outcome.market.event_id]
     selection = _selection_label(opportunity.quote, event)
@@ -3602,6 +3630,11 @@ def _board_row_markup(
         odds_format,
         as_of,
         selection=selection,
+        matching_quotes=(
+            quotes_by_outcome.get(opportunity.quote.outcome.id, ())
+            if quotes_by_outcome is not None
+            else None
+        ),
     )
     row_class = "board-row recommended-row" if recommended else "board-row"
     return (
@@ -3664,6 +3697,7 @@ def _render_priority_value_bets(
     *,
     recommendation_values: tuple[ValueOpportunity, ...] | None = None,
 ) -> None:
+    quote_index = _quotes_by_outcome(quotes)
     recommended = (
         _recommended_value_opportunities(
             values,
@@ -3684,6 +3718,7 @@ def _render_priority_value_bets(
                 odds_format,
                 as_of,
                 recommended=True,
+                quotes_by_outcome=quote_index,
             )
             for rank, opportunity in enumerate(recommended, start=1)
         )
@@ -3736,7 +3771,10 @@ def _render_priority_value_bets(
         event_map,
         more_sort,
     )
-    visible_count = max(20, int(st.session_state.get("ev_visible_count", 20)))
+    visible_count = max(
+        EV_INITIAL_BATCH_SIZE,
+        int(st.session_state.get("ev_visible_count", EV_INITIAL_BATCH_SIZE)),
+    )
     visible_count = min(visible_count, len(all_ev_values))
     visible_values = all_ev_values[:visible_count]
     page_rows = "".join(
@@ -3748,6 +3786,7 @@ def _render_priority_value_bets(
             odds_format,
             as_of,
             recommended=False,
+            quotes_by_outcome=quote_index,
         )
         for rank, opportunity in enumerate(visible_values, start=1)
     )
@@ -3756,13 +3795,12 @@ def _render_priority_value_bets(
         unsafe_allow_html=True,
     )
     if visible_count < len(all_ev_values):
-        _, button_column, _ = st.columns([4, 1.6, 4])
-        with button_column, st.container(key="load_more_ev"):
+        with st.container(key="load_more_ev"):
             remaining_count = len(all_ev_values) - visible_count
             st.button(
-                f"Load {min(20, remaining_count)} more",
+                f"Load {min(EV_BATCH_SIZE, remaining_count)} more",
                 on_click=_show_more_ev_bets,
-                args=(20,),
+                args=(EV_BATCH_SIZE,),
                 width="stretch",
             )
 
@@ -3774,9 +3812,15 @@ def _value_comparison_markup(
     as_of: datetime,
     *,
     selection: str | None = None,
+    matching_quotes: tuple[Quote, ...] | None = None,
 ) -> str:
     price_rows: list[str] = []
-    for quote in _quotes_for_opportunity(opportunity, quotes):
+    comparison_quotes = (
+        _quotes_for_opportunity(opportunity, quotes)
+        if matching_quotes is None
+        else matching_quotes
+    )
+    for quote in comparison_quotes:
         book = quote.sportsbook.name
         is_best = quote.sportsbook.id == opportunity.quote.sportsbook.id
         implied = implied_probability(quote.decimal_odds)
