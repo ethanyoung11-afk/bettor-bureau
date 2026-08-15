@@ -2565,6 +2565,10 @@ def _render_ev_filter_bar(
         st.session_state["ev_minimum_preset"] = "2%+"
         st.session_state["min_ev"] = 2.0
         st.session_state["ev_reference_defaults_v5"] = True
+    if not st.session_state.get("ev_all_markets_default_v1"):
+        if st.session_state.get("ev_market_filter") in {None, "Moneyline"}:
+            st.session_state["ev_market_filter"] = "All Markets"
+        st.session_state["ev_all_markets_default_v1"] = True
     if not st.session_state.get("ev_default_two_v1"):
         st.session_state["ev_minimum_preset"] = "2%+"
         st.session_state["min_ev"] = 2.0
@@ -2666,8 +2670,8 @@ def _render_ev_filter_bar(
         book_count = str(len(selected_before)) if selected_before else "All"
         with book_col.popover(f"My Sportsbooks ({book_count})", width="stretch"):
             st.caption(
-                "Only selected books can be recommended. All available books still shape "
-                "fair odds."
+                "Selected books personalize Recommended Bets. Other +EV Bets still scans "
+                "the complete sportsbook market."
             )
             st.caption("Choose your books, then apply once.")
             with st.form(
@@ -2908,6 +2912,21 @@ def _best_value_by_outcome(
         ):
             selected[outcome_id] = item
     return tuple(selected.values())
+
+
+def _values_for_selected_sportsbooks(
+    values: tuple[ValueOpportunity, ...],
+    sportsbooks: tuple[str, ...],
+) -> tuple[ValueOpportunity, ...]:
+    """Restrict personalized recommendations without shrinking the market-wide board."""
+    if not sportsbooks:
+        return values
+    selected = {sportsbook.casefold() for sportsbook in sportsbooks}
+    return tuple(
+        item
+        for item in values
+        if item.quote.sportsbook.name.casefold() in selected
+    )
 
 
 def _filter_value_opportunities(
@@ -4323,24 +4342,26 @@ def run() -> None:
             repository,
             persist_preferences=is_admin,
         )
-        candidate_books: tuple[str, ...] | None = ev_filters.my_books or None
-        values = detect_consensus_value(
+        market_values = detect_consensus_value(
             quotes,
             as_of=as_of,
             max_age=controls["freshness"],
             minimum_ev=Decimal("0"),
-            candidate_sportsbooks=candidate_books,
             include_stale=True,
         )
+        recommendation_pool = _values_for_selected_sportsbooks(
+            market_values,
+            ev_filters.my_books,
+        )
         recommendation_values = _filter_value_opportunities(
-            values,
+            recommendation_pool,
             event_map,
             ev_filters,
             as_of=as_of,
             max_age=controls["freshness"],
         )
         all_filtered_values = _filter_value_opportunities(
-            values,
+            market_values,
             event_map,
             _without_recommendation_probability_screen(ev_filters),
             as_of=as_of,

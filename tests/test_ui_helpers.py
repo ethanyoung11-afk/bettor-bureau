@@ -36,6 +36,7 @@ from odds_scanner.ui import (
     _sportsbook_default_enabled,
     _sportsbook_event_url,
     _value_comparison_markup,
+    _values_for_selected_sportsbooks,
     _without_recommendation_probability_screen,
 )
 
@@ -44,6 +45,24 @@ def test_strategy_money_is_dollar_first():
     assert _format_strategy_dollars(Decimal("2.50")) == "+$250"
     assert _format_strategy_dollars(Decimal("-1.25")) == "-$125"
     assert _format_strategy_dollars(Decimal("0")) == "+$0"
+
+
+def test_sportsbook_preferences_only_narrow_personalized_recommendations(now):
+    snapshot = generate_demo_snapshots(now)[-1]
+    market_values = detect_consensus_value(
+        snapshot.quotes,
+        as_of=now,
+        max_age=timedelta(days=1),
+        minimum_ev=Decimal("0"),
+        include_stale=True,
+    )
+
+    personalized = _values_for_selected_sportsbooks(market_values, ("Betway",))
+
+    assert personalized
+    assert len(personalized) < len(market_values)
+    assert {item.quote.sportsbook.name for item in personalized} == {"Betway"}
+    assert _values_for_selected_sportsbooks(market_values, ()) == market_values
 
 
 def test_board_tooltips_are_exclusive_and_default_books_are_target_books():
