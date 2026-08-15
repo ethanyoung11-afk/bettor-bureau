@@ -29,9 +29,11 @@ def _selected_sportsbooks() -> tuple[str, ...]:
 def main() -> int:
     repository = repository_from_environment()
     as_of = datetime.now(UTC)
-    future_event_ids = {
-        event.id for event in repository.load_events(PROVIDER_ID) if event.start_time > as_of
-    }
+    future_events = tuple(
+        event for event in repository.load_events(PROVIDER_ID) if event.start_time > as_of
+    )
+    event_map = {event.id: event for event in future_events}
+    future_event_ids = set(event_map)
     quotes = deduplicate_quotes(
         quote
         for quote in repository.load_latest_quotes(PROVIDER_ID)
@@ -76,6 +78,18 @@ def main() -> int:
         "displayed_by_sportsbook": dict(
             sorted(Counter(item.quote.sportsbook.name for item in displayed).items())
         ),
+        "default_displayed_prices": [
+            {
+                "event": event_map[item.quote.outcome.market.event_id].name,
+                "market": item.quote.outcome.market.kind.value,
+                "selection": item.quote.outcome.side.value,
+                "sportsbook": item.quote.sportsbook.name,
+                "decimal_odds": str(item.quote.decimal_odds),
+                "expected_value": str(item.expected_value),
+                "reference_books": item.reference_books,
+            }
+            for item in displayed
+        ],
     }
     print(json.dumps(summary, sort_keys=True))
     return 0
