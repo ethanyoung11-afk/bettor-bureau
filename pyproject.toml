@@ -9,6 +9,7 @@ description = "Sport-agnostic sportsbook odds comparison and arbitrage scanner"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "extra-streamlit-components>=0.1.81,<1",
     "pandas>=2.2,<4",
     "psycopg[binary]>=3.2,<4",
     "requests>=2.31,<3",

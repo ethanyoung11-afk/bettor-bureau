@@ -18,9 +18,9 @@ from urllib.parse import unquote as url_unquote
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
+import extra_streamlit_components as stx
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
 
 from odds_scanner.analytics import (
     MiddleOpportunity,
@@ -2478,6 +2478,10 @@ def _sportsbook_preferences_cookie_name(mode: str) -> str:
     return f"bettor_bureau_sportsbooks_{provider}"
 
 
+def _sportsbook_preferences_loaded_key(mode: str) -> str:
+    return f"sportsbook_preferences_loaded_{stable_id('browser-cookie-v1', mode)}"
+
+
 def _sportsbook_default_enabled(book: str) -> bool:
     _ = book
     return True
@@ -2514,20 +2518,28 @@ def _queue_sportsbook_preferences_cookie(
         json.dumps(selected, separators=(",", ":")),
         safe="",
     )
+    st.session_state[_sportsbook_preferences_loaded_key(mode)] = True
     _set_ev_page(0)
 
 
-def _render_pending_sportsbook_preferences_cookie(mode: str) -> None:
+def _render_pending_sportsbook_preferences_cookie(
+    mode: str,
+    cookie_manager: Any,
+) -> None:
     cookie_name = _sportsbook_preferences_cookie_name(mode)
     pending_value = st.session_state.pop(f"pending_{cookie_name}", None)
     if pending_value is None:
         return
-    cookie = f"{cookie_name}={pending_value}; Max-Age=31536000; Path=/; SameSite=Lax"
-    components.html(
-        f"<script>document.cookie = {json.dumps(cookie)};</script>",
-        height=0,
-        width=0,
+    cookie_manager.set(
+        cookie_name,
+        pending_value,
+        expires_at=datetime.now(UTC) + timedelta(days=365),
+        key=f"set_{cookie_name}_{stable_id('cookie-value', pending_value)}",
     )
+
+
+def _sportsbook_cookie_manager() -> Any:
+    return stx.CookieManager(key="bettor_bureau_sportsbook_preferences")
 
 
 def _set_sportsbook_selection(
@@ -2577,7 +2589,8 @@ def _render_ev_filter_bar(
     quotes: tuple[Quote, ...],
     as_of: datetime,
 ) -> EVFilterState:
-    _render_pending_sportsbook_preferences_cookie(mode)
+    cookie_manager = _sportsbook_cookie_manager()
+    _render_pending_sportsbook_preferences_cookie(mode, cookie_manager)
     if not st.session_state.get("ev_reference_defaults_v5"):
         st.session_state["ev_implied_preset"] = "Any"
         st.session_state["ev_custom_implied"] = 0.0
@@ -2664,19 +2677,22 @@ def _render_ev_filter_bar(
             args=(0,),
         )
 
-        preference_session_key = f"sportsbook_preferences_loaded_{stable_id('v2', mode)}"
+        preference_session_key = _sportsbook_preferences_loaded_key(mode)
         if not st.session_state.get(preference_session_key):
             saved_books = _decode_sportsbook_preferences(
-                st.context.cookies.get(_sportsbook_preferences_cookie_name(mode)),
+                cookie_manager.get(_sportsbook_preferences_cookie_name(mode)),
                 tuple(available_books),
             )
-            for book in available_books:
-                st.session_state[_sportsbook_toggle_key(mode, book)] = (
-                    book in saved_books
-                    if saved_books is not None
-                    else _sportsbook_default_enabled(book)
-                )
-            st.session_state[preference_session_key] = True
+            if saved_books is not None:
+                for book in available_books:
+                    st.session_state[_sportsbook_toggle_key(mode, book)] = book in saved_books
+                st.session_state[preference_session_key] = True
+            else:
+                for book in available_books:
+                    st.session_state.setdefault(
+                        _sportsbook_toggle_key(mode, book),
+                        _sportsbook_default_enabled(book),
+                    )
         else:
             for book in available_books:
                 st.session_state.setdefault(
