@@ -150,6 +150,8 @@ RECOMMENDED_MINIMUM_IMPLIED_PROBABILITY = Decimal("0.30")
 RECOMMENDED_MINIMUM_AMERICAN_ODDS = -200
 RECOMMENDED_MAXIMUM_AMERICAN_ODDS = 300
 RECOMMENDED_MINIMUM_REFERENCE_BOOKS = 3
+OFFICIAL_RECOMMENDATION_PREFIX = "official-recommendation:v1:"
+OFFICIAL_STARTING_BANKROLL = Decimal("100")
 _DEMO_SEED_LOCK = Lock()
 
 
@@ -166,6 +168,17 @@ class EVFilterState:
     starts_before: datetime | None
     fresh_only: bool
     sort_by: str
+
+
+@dataclass(frozen=True, slots=True)
+class OfficialPerformance:
+    wins: int
+    losses: int
+    voids: int
+    pending: int
+    units: Decimal
+    roi: Decimal
+    bankroll: Decimal
 
 
 def _provider_id(mode: str) -> str:
@@ -1472,6 +1485,8 @@ def _render_owner_panel(
             )
             st.divider()
             _render_refresh_admin_status(repository, mode)
+            st.divider()
+            _render_official_settlement_controls(repository)
             if shared_mode and st.button(
                 "Return to viewer mode",
                 width="stretch",
@@ -3018,6 +3033,84 @@ def _recommended_value_opportunities(
     return tuple(qualified[:limit])
 
 
+def _official_recommendation_note(opportunity: ValueOpportunity) -> str:
+    recommendation_id = stable_id(
+        "official-recommendation-v1",
+        opportunity.quote.outcome.market.event_id,
+        opportunity.quote.outcome.id,
+    )
+    return f"{OFFICIAL_RECOMMENDATION_PREFIX}{recommendation_id}"
+
+
+def _official_bets(bets: tuple[TrackedBet, ...]) -> tuple[TrackedBet, ...]:
+    return tuple(
+        bet for bet in bets if bet.notes.startswith(OFFICIAL_RECOMMENDATION_PREFIX)
+    )
+
+
+def _record_official_recommendations(
+    recommendations: tuple[ValueOpportunity, ...],
+    event_map: dict[str, Event],
+    repository: QuoteRepository,
+    *,
+    recorded_at: datetime,
+) -> int:
+    """Persist each official symbolic pick once at its original offered price."""
+    existing_notes = {bet.notes for bet in _official_bets(repository.list_bets())}
+    recorded = 0
+    for opportunity in recommendations:
+        event = event_map.get(opportunity.quote.outcome.market.event_id)
+        if event is None:
+            continue
+        note = _official_recommendation_note(opportunity)
+        if note in existing_notes:
+            continue
+        repository.add_bet(
+            TrackedBet(
+                id=None,
+                created_at=recorded_at,
+                event_id=event.id,
+                event_name=event.name,
+                market_label=_market_label(opportunity.quote.outcome.market),
+                selection=_selection_label(opportunity.quote, event),
+                sportsbook=opportunity.quote.sportsbook.name,
+                decimal_odds=opportunity.quote.decimal_odds,
+                stake=Decimal("1"),
+                notes=note,
+            )
+        )
+        existing_notes.add(note)
+        recorded += 1
+    return recorded
+
+
+def _official_performance(bets: tuple[TrackedBet, ...]) -> OfficialPerformance:
+    official = _official_bets(bets)
+    wins = sum(bet.status is BetStatus.WON for bet in official)
+    losses = sum(bet.status is BetStatus.LOST for bet in official)
+    voids = sum(bet.status is BetStatus.VOID for bet in official)
+    pending = sum(bet.status is BetStatus.PENDING for bet in official)
+    units = sum((bet.profit_loss or Decimal("0") for bet in official), Decimal("0"))
+    settled_stake = sum(
+        (
+            bet.stake
+            for bet in official
+            if bet.status in {BetStatus.WON, BetStatus.LOST}
+        ),
+        Decimal("0"),
+    )
+    roi = units / settled_stake if settled_stake else Decimal("0")
+    return OfficialPerformance(
+        wins=wins,
+        losses=losses,
+        voids=voids,
+        pending=pending,
+        units=units,
+        roi=roi,
+        bankroll=OFFICIAL_STARTING_BANKROLL + units,
+    )
+
+
 def _quotes_for_opportunity(
     opportunity: ValueOpportunity,
     quotes: tuple[Quote, ...],
@@ -3524,6 +3617,8 @@ def _render_priority_value_bets(
     as_of: datetime,
     *,
     recommendation_values: tuple[ValueOpportunity, ...] | None = None,
+    repository: QuoteRepository | None = None,
+    record_official: bool = False,
 ) -> None:
     if not values:
         st.markdown(
@@ -3545,6 +3640,13 @@ def _render_priority_value_bets(
             as_of=as_of,
             style="Balanced",
         )
+        if record_official and repository is not None and recommended:
+            _record_official_recommendations(
+                recommended,
+                event_map,
+                repository,
+                recorded_at=as_of,
+            )
         if recommended:
             recommendation_rows = "".join(
                 _board_row_markup(
@@ -3700,6 +3802,8 @@ def _render_overview(
     odds_format: str,
     *,
     recommendation_values: tuple[ValueOpportunity, ...] | None = None,
+    repository: QuoteRepository | None = None,
+    record_official: bool = False,
 ) -> None:
     _render_priority_value_bets(
         values,
@@ -3708,6 +3812,8 @@ def _render_overview(
         odds_format,
         as_of,
         recommendation_values=recommendation_values,
+        repository=repository,
+        record_official=record_official,
     )
 
 
@@ -3777,6 +3883,92 @@ def _render_line_movement(history: tuple[Quote, ...], events: tuple[Event, ...])
         st.line_chart(line_chart, width="stretch")
     series_count = frame["Series"].nunique()
     st.caption(f"Showing {len(frame):,} stored observations across {series_count} series.")
+
+
+def _render_official_performance(
+    repository: QuoteRepository,
+    odds_format: str,
+) -> None:
+    bets = _official_bets(repository.list_bets())
+    performance = _official_performance(bets)
+    with st.container(border=True, key="official_track_record"):
+        heading_column, note_column = st.columns(
+            [2.2, 5], vertical_alignment="bottom"
+        )
+        heading_column.markdown("### Official Track Record")
+        note_column.caption(
+            "Symbolic 1-unit bets recorded when an official recommendation is published."
+        )
+        record_column, units_column, roi_column, bankroll_column, pending_column = st.columns(5)
+        record_column.metric("Record", f"{performance.wins}-{performance.losses}")
+        units_column.metric("Units", f"{performance.units:+.2f}u")
+        roi_column.metric("ROI", f"{performance.roi:+.1%}")
+        bankroll_column.metric("Bankroll", f"{performance.bankroll:.2f}u")
+        pending_column.metric("Pending", performance.pending)
+        if performance.voids:
+            st.caption(f"{performance.voids} voided recommendation(s) excluded from ROI.")
+
+        if not bets:
+            st.caption(
+                "The first official recommendations will appear here after the owner publishes "
+                "a live slate."
+            )
+            return
+
+        recent = bets[:10]
+        st.dataframe(
+            [
+                {
+                    "Published": bet.created_at.astimezone().strftime("%b %d, %I:%M %p"),
+                    "Event": bet.event_name,
+                    "Pick": f"{bet.selection} · {bet.market_label}",
+                    "Book": bet.sportsbook,
+                    "Odds": format_odds(bet.decimal_odds, odds_format),
+                    "Result": bet.status.value.title(),
+                    "Units": (
+                        f"{bet.profit_loss:+.2f}u"
+                        if bet.profit_loss is not None
+                        else "—"
+                    ),
+                }
+                for bet in recent
+            ],
+            hide_index=True,
+            width="stretch",
+        )
+
+
+def _render_official_settlement_controls(repository: QuoteRepository) -> None:
+    pending = tuple(
+        bet
+        for bet in _official_bets(repository.list_bets())
+        if bet.status is BetStatus.PENDING
+    )
+    st.markdown("#### Official recommendation results")
+    if not pending:
+        st.caption("No official recommendations are waiting for a result.")
+        return
+
+    choices = {
+        f"#{bet.id} · {bet.event_name} · {bet.selection} @ {bet.decimal_odds}": bet
+        for bet in pending
+    }
+    with st.form("settle_official_recommendation", border=False):
+        choice = st.selectbox("Pending recommendation", list(choices))
+        result = st.selectbox("Result", ["Won", "Lost", "Void"])
+        submitted = st.form_submit_button("Save result", type="primary")
+    if submitted:
+        bet = choices[choice]
+        status = BetStatus(result.lower())
+        if status is BetStatus.WON:
+            profit_loss = bet.stake * (bet.decimal_odds - Decimal("1"))
+        elif status is BetStatus.LOST:
+            profit_loss = -bet.stake
+        else:
+            profit_loss = Decimal("0")
+        if bet.id is not None:
+            repository.update_bet(bet.id, status, profit_loss)
+        st.rerun()
 
 
 def _render_bets(
@@ -4194,7 +4386,20 @@ def run() -> None:
             as_of,
             controls["odds_format"],
             recommendation_values=recommendation_values,
+            repository=repository,
+            record_official=(
+                is_admin
+                and bool(controls["refresh"])
+                and str(controls["mode"]) != "Demo"
+                and isinstance(
+                    st.session_state.get("last_refresh_diagnostics"),
+                    RefreshDiagnostics,
+                )
+                and st.session_state["last_refresh_diagnostics"].status
+                is RefreshResultStatus.SUCCESS
+            ),
         )
+        _render_official_performance(repository, controls["odds_format"])
     else:
         comparison_books = sorted(
             {quote.sportsbook.name for quote in quotes},
