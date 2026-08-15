@@ -17,6 +17,7 @@ from urllib.parse import unquote as url_unquote
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -3080,6 +3081,46 @@ def _official_performance(bets: tuple[TrackedBet, ...]) -> OfficialPerformance:
     )
 
 
+def _official_bankroll_history(
+    bets: tuple[TrackedBet, ...],
+    *,
+    as_of: datetime,
+) -> pd.DataFrame:
+    """Build a dollar-denominated bankroll series from settled official bets."""
+    official = _official_bets(bets)
+    settled = sorted(
+        (
+            bet
+            for bet in official
+            if bet.status is not BetStatus.PENDING and bet.profit_loss is not None
+        ),
+        key=lambda bet: bet.settled_at or bet.created_at,
+    )
+    first_activity = min(
+        (bet.created_at for bet in official),
+        default=as_of - timedelta(days=1),
+    )
+    balance = OFFICIAL_STARTING_BANKROLL_UNITS * OFFICIAL_UNIT_VALUE_DOLLARS
+    rows: list[dict[str, object]] = [
+        {
+            "Date": first_activity,
+            "Bankroll ($)": float(balance),
+        }
+    ]
+    for bet in settled:
+        balance += (bet.profit_loss or Decimal("0")) * OFFICIAL_UNIT_VALUE_DOLLARS
+        rows.append(
+            {
+                "Date": bet.settled_at or bet.created_at,
+                "Bankroll ($)": float(balance),
+            }
+        )
+    last_date = settled[-1].settled_at or settled[-1].created_at if settled else first_activity
+    if last_date < as_of:
+        rows.append({"Date": as_of, "Bankroll ($)": float(balance)})
+    return pd.DataFrame(rows)
+
+
 def _quotes_for_opportunity(
     opportunity: ValueOpportunity,
     quotes: tuple[Quote, ...],
@@ -3873,6 +3914,48 @@ def _render_official_performance(
         if performance.voids:
             st.caption(f"{performance.voids} voided recommendation(s) excluded from ROI.")
 
+        st.markdown("#### Bankroll over time")
+        bankroll_history = _official_bankroll_history(
+            bets,
+            as_of=datetime.now(UTC),
+        )
+        bankroll_low = float(bankroll_history["Bankroll ($)"].min())
+        bankroll_high = float(bankroll_history["Bankroll ($)"].max())
+        bankroll_padding = max(50.0, (bankroll_high - bankroll_low) * 0.15)
+        bankroll_chart = (
+            alt.Chart(bankroll_history)
+            .mark_line(
+                color="#21c96b",
+                interpolate="step-after",
+                point=alt.OverlayMarkDef(color="#21c96b", size=55),
+                strokeWidth=3,
+            )
+            .encode(
+                x=alt.X("Date:T", title=None),
+                y=alt.Y(
+                    "Bankroll ($):Q",
+                    title=None,
+                    scale=alt.Scale(
+                        domain=[
+                            bankroll_low - bankroll_padding,
+                            bankroll_high + bankroll_padding,
+                        ],
+                        zero=False,
+                    ),
+                    axis=alt.Axis(format="$,.0f"),
+                ),
+                tooltip=[
+                    alt.Tooltip("Date:T", title="Date", format="%b %d, %Y · %I:%M %p"),
+                    alt.Tooltip("Bankroll ($):Q", title="Bankroll", format="$,.0f"),
+                ],
+            )
+            .properties(height=300)
+        )
+        st.altair_chart(
+            bankroll_chart,
+            width="stretch",
+        )
+
         if not bets:
             st.caption(
                 "The first official recommendations will appear after the next successful "
@@ -3880,10 +3963,26 @@ def _render_official_performance(
             )
             return
 
-        recent = bets[:10]
+        event_map = {event.id: event for event in repository.load_events()}
+        chronological_bets = sorted(
+            bets,
+            key=lambda bet: (
+                event_map[bet.event_id].start_time
+                if bet.event_id in event_map
+                else bet.created_at
+            ),
+        )
+        st.markdown("#### Tracked recommendations")
         st.dataframe(
             [
                 {
+                    "Event time": (
+                        event_map[bet.event_id]
+                        .start_time.astimezone(DISPLAY_TIMEZONE)
+                        .strftime("%b %d, %I:%M %p")
+                        if bet.event_id in event_map
+                        else "—"
+                    ),
                     "Published": bet.created_at.astimezone(DISPLAY_TIMEZONE).strftime(
                         "%b %d, %I:%M %p"
                     ),
@@ -3901,10 +4000,11 @@ def _render_official_performance(
                         else "—"
                     ),
                 }
-                for bet in recent
+                for bet in chronological_bets
             ],
             hide_index=True,
             width="stretch",
+            height=min(600, 38 * (len(chronological_bets) + 1)),
         )
 
 

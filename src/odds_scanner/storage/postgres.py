@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -106,8 +106,10 @@ SCHEMA_STATEMENTS = (
         stake TEXT NOT NULL,
         status TEXT NOT NULL,
         profit_loss TEXT,
+        settled_at TEXT,
         notes TEXT NOT NULL DEFAULT ''
     )""",
+    "ALTER TABLE tracked_bets ADD COLUMN IF NOT EXISTS settled_at TEXT",
     """CREATE TABLE IF NOT EXISTS watchlist (
         event_id TEXT PRIMARY KEY, created_at TEXT NOT NULL
     )""",
@@ -636,8 +638,9 @@ class PostgresQuoteRepository:
         with self._connection() as cursor:
             cursor.execute(
                 "INSERT INTO tracked_bets(created_at, event_id, event_name, market_label, "
-                "selection, sportsbook, decimal_odds, stake, status, profit_loss, notes) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                "selection, sportsbook, decimal_odds, stake, status, profit_loss, settled_at, "
+                "notes) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                "RETURNING id",
                 (
                     bet.created_at.isoformat(),
                     bet.event_id,
@@ -649,6 +652,7 @@ class PostgresQuoteRepository:
                     str(bet.stake),
                     bet.status.value,
                     str(bet.profit_loss) if bet.profit_loss is not None else None,
+                    bet.settled_at.isoformat() if bet.settled_at is not None else None,
                     bet.notes,
                 ),
             )
@@ -676,16 +680,38 @@ class PostgresQuoteRepository:
                 profit_loss=(
                     Decimal(str(row["profit_loss"])) if row["profit_loss"] is not None else None
                 ),
+                settled_at=(
+                    datetime.fromisoformat(str(row["settled_at"]))
+                    if row["settled_at"] is not None
+                    else None
+                ),
                 notes=str(row["notes"]),
             )
             for row in rows
         )
 
-    def update_bet(self, bet_id: int, status: BetStatus, profit_loss: Decimal | None) -> None:
+    def update_bet(
+        self,
+        bet_id: int,
+        status: BetStatus,
+        profit_loss: Decimal | None,
+        settled_at: datetime | None = None,
+    ) -> None:
+        effective_settled_at = (
+            None
+            if status is BetStatus.PENDING
+            else (settled_at or datetime.now(UTC)).isoformat()
+        )
         with self._connection() as cursor:
             cursor.execute(
-                "UPDATE tracked_bets SET status = %s, profit_loss = %s WHERE id = %s",
-                (status.value, str(profit_loss) if profit_loss is not None else None, bet_id),
+                "UPDATE tracked_bets SET status = %s, profit_loss = %s, settled_at = %s "
+                "WHERE id = %s",
+                (
+                    status.value,
+                    str(profit_loss) if profit_loss is not None else None,
+                    effective_settled_at,
+                    bet_id,
+                ),
             )
 
     def watched_event_ids(self) -> frozenset[str]:

@@ -70,7 +70,13 @@ class QuoteRepository(Protocol):
 
     def list_bets(self) -> tuple[TrackedBet, ...]: ...
 
-    def update_bet(self, bet_id: int, status: BetStatus, profit_loss: Decimal | None) -> None: ...
+    def update_bet(
+        self,
+        bet_id: int,
+        status: BetStatus,
+        profit_loss: Decimal | None,
+        settled_at: datetime | None = None,
+    ) -> None: ...
 
     def watched_event_ids(self) -> frozenset[str]: ...
 

@@ -336,10 +336,13 @@ class TrackedBet:
     stake: Decimal
     status: BetStatus = BetStatus.PENDING
     profit_loss: Decimal | None = None
+    settled_at: datetime | None = None
     notes: str = ""
 
     def __post_init__(self) -> None:
         ensure_aware(self.created_at, "created_at")
+        if self.settled_at is not None:
+            ensure_aware(self.settled_at, "settled_at")
         if self.decimal_odds <= Decimal("1"):
             raise ValueError("decimal_odds must be greater than 1")
         if self.stake <= 0:

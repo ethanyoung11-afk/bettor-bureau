@@ -4,7 +4,7 @@ import json
 import sqlite3
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from threading import RLock
@@ -113,6 +113,7 @@ CREATE TABLE IF NOT EXISTS tracked_bets (
     stake TEXT NOT NULL,
     status TEXT NOT NULL,
     profit_loss TEXT,
+    settled_at TEXT,
     notes TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS watchlist (
@@ -193,6 +194,12 @@ class SQLiteQuoteRepository:
             }
             if "source_url" not in quote_columns:
                 connection.execute("ALTER TABLE quotes ADD COLUMN source_url TEXT")
+            tracked_bet_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(tracked_bets)")
+            }
+            if "settled_at" not in tracked_bet_columns:
+                connection.execute("ALTER TABLE tracked_bets ADD COLUMN settled_at TEXT")
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
@@ -668,8 +675,8 @@ class SQLiteQuoteRepository:
         with self._write_lock, self._connection() as connection:
             cursor = connection.execute(
                 "INSERT INTO tracked_bets(created_at, event_id, event_name, market_label, "
-                "selection, sportsbook, decimal_odds, stake, status, profit_loss, notes) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "selection, sportsbook, decimal_odds, stake, status, profit_loss, settled_at, "
+                "notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     bet.created_at.isoformat(),
                     bet.event_id,
@@ -681,6 +688,7 @@ class SQLiteQuoteRepository:
                     str(bet.stake),
                     bet.status.value,
                     str(bet.profit_loss) if bet.profit_loss is not None else None,
+                    bet.settled_at.isoformat() if bet.settled_at is not None else None,
                     bet.notes,
                 ),
             )
@@ -708,16 +716,37 @@ class SQLiteQuoteRepository:
                 profit_loss=(
                     Decimal(str(row["profit_loss"])) if row["profit_loss"] is not None else None
                 ),
+                settled_at=(
+                    datetime.fromisoformat(str(row["settled_at"]))
+                    if row["settled_at"] is not None
+                    else None
+                ),
                 notes=str(row["notes"]),
             )
             for row in rows
         )
 
-    def update_bet(self, bet_id: int, status: BetStatus, profit_loss: Decimal | None) -> None:
+    def update_bet(
+        self,
+        bet_id: int,
+        status: BetStatus,
+        profit_loss: Decimal | None,
+        settled_at: datetime | None = None,
+    ) -> None:
+        effective_settled_at = (
+            None
+            if status is BetStatus.PENDING
+            else (settled_at or datetime.now(UTC)).isoformat()
+        )
         with self._write_lock, self._connection() as connection:
             connection.execute(
-                "UPDATE tracked_bets SET status = ?, profit_loss = ? WHERE id = ?",
-                (status.value, str(profit_loss) if profit_loss is not None else None, bet_id),
+                "UPDATE tracked_bets SET status = ?, profit_loss = ?, settled_at = ? WHERE id = ?",
+                (
+                    status.value,
+                    str(profit_loss) if profit_loss is not None else None,
+                    effective_settled_at,
+                    bet_id,
+                ),
             )
 
     def watched_event_ids(self) -> frozenset[str]:

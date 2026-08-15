@@ -3,9 +3,11 @@ from datetime import timedelta
 from decimal import Decimal
 
 from odds_scanner.analytics import best_value_by_outcome, detect_consensus_value
+from odds_scanner.domain import BetStatus, TrackedBet
 from odds_scanner.opportunities import deduplicate_quotes, implied_probability
 from odds_scanner.presentation import decimal_to_american
 from odds_scanner.providers.demo import generate_demo_snapshots
+from odds_scanner.strategy import OFFICIAL_RECOMMENDATION_PREFIX
 from odds_scanner.ui import (
     CORE_REFRESH_LEAGUES,
     RECOMMENDED_MAXIMUM_AMERICAN_ODDS,
@@ -26,6 +28,7 @@ from odds_scanner.ui import (
     _game_market_sections_markup,
     _market_label,
     _market_range_label,
+    _official_bankroll_history,
     _password_matches,
     _recommended_value_opportunities,
     _selection_label,
@@ -42,6 +45,47 @@ def test_strategy_money_is_dollar_first():
     assert _format_strategy_dollars(Decimal("2.50")) == "+$250"
     assert _format_strategy_dollars(Decimal("-1.25")) == "-$125"
     assert _format_strategy_dollars(Decimal("0")) == "+$0"
+
+
+def test_official_bankroll_history_uses_settlement_time_and_dollars(now):
+    common = {
+        "id": None,
+        "event_id": "event",
+        "event_name": "Away at Home",
+        "market_label": "Moneyline",
+        "selection": "Home",
+        "sportsbook": "Book",
+        "decimal_odds": Decimal("2.00"),
+        "stake": Decimal("1"),
+    }
+    bets = (
+        TrackedBet(
+            **common,
+            created_at=now - timedelta(days=3),
+            status=BetStatus.WON,
+            profit_loss=Decimal("0.50"),
+            settled_at=now - timedelta(days=1),
+            notes=f"{OFFICIAL_RECOMMENDATION_PREFIX}one",
+        ),
+        TrackedBet(
+            **common,
+            created_at=now - timedelta(days=2),
+            status=BetStatus.LOST,
+            profit_loss=Decimal("-1"),
+            settled_at=now - timedelta(days=2),
+            notes=f"{OFFICIAL_RECOMMENDATION_PREFIX}two",
+        ),
+        TrackedBet(
+            **common,
+            created_at=now - timedelta(hours=1),
+            notes=f"{OFFICIAL_RECOMMENDATION_PREFIX}pending",
+        ),
+    )
+
+    history = _official_bankroll_history(bets, as_of=now)
+
+    assert list(history["Bankroll ($)"]) == [10000.0, 9900.0, 9950.0, 9950.0]
+    assert list(history["Date"]) == sorted(history["Date"])
 
 
 def test_board_tooltips_are_exclusive_and_every_book_is_enabled_by_default():

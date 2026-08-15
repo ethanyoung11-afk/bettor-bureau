@@ -159,9 +159,11 @@ def test_settings_watchlist_and_bet_tracker_round_trip(tmp_path, now, event):
             stake=Decimal("50"),
         )
     )
-    repository.update_bet(bet_id, BetStatus.WON, Decimal("55"))
+    settled_at = now + timedelta(minutes=5)
+    repository.update_bet(bet_id, BetStatus.WON, Decimal("55"), settled_at=settled_at)
 
     assert repository.load_settings()["bankroll"] == "750"
     assert repository.watched_event_ids() == frozenset({event.id})
     assert repository.list_bets()[0].status is BetStatus.WON
     assert repository.list_bets()[0].profit_loss == Decimal("55")
+    assert repository.list_bets()[0].settled_at == settled_at
