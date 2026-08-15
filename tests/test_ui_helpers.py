@@ -47,7 +47,7 @@ def test_strategy_money_is_dollar_first():
     assert _format_strategy_dollars(Decimal("0")) == "+$0"
 
 
-def test_sportsbook_preferences_only_narrow_personalized_recommendations(now):
+def test_sportsbook_preferences_narrow_every_displayed_opportunity(now):
     snapshot = generate_demo_snapshots(now)[-1]
     market_values = detect_consensus_value(
         snapshot.quotes,
@@ -62,7 +62,7 @@ def test_sportsbook_preferences_only_narrow_personalized_recommendations(now):
     assert personalized
     assert len(personalized) < len(market_values)
     assert {item.quote.sportsbook.name for item in personalized} == {"Betway"}
-    assert _values_for_selected_sportsbooks(market_values, ()) == market_values
+    assert _values_for_selected_sportsbooks(market_values, ()) == ()
 
 
 def test_board_tooltips_are_exclusive_and_default_books_are_target_books():

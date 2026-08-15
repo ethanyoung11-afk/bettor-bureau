@@ -2676,11 +2676,11 @@ def _render_ev_filter_bar(
             for book in available_books
             if bool(st.session_state.get(_sportsbook_toggle_key(mode, book), True))
         )
-        book_count = str(len(selected_before)) if selected_before else "All"
+        book_count = str(len(selected_before))
         with book_col.popover(f"My Sportsbooks ({book_count})", width="stretch"):
             st.caption(
-                "Selected books personalize Recommended Bets. Other +EV Bets still scans "
-                "the complete sportsbook market."
+                "Only bets available at your selected sportsbooks appear anywhere on "
+                "the Best Bets page. Fair odds still use the complete sportsbook market."
             )
             st.caption("Choose your books, then apply once.")
             with st.form(
@@ -2716,7 +2716,7 @@ def _render_ev_filter_bar(
                     ),
                     width="stretch",
                     help=(
-                        "Clears the restriction so every eligible sportsbook may be recommended."
+                        "Selects every sportsbook currently available in the feed."
                     ),
                 )
                 st.caption(
@@ -2918,9 +2918,7 @@ def _values_for_selected_sportsbooks(
     values: tuple[ValueOpportunity, ...],
     sportsbooks: tuple[str, ...],
 ) -> tuple[ValueOpportunity, ...]:
-    """Restrict personalized recommendations without shrinking the market-wide board."""
-    if not sportsbooks:
-        return values
+    """Restrict every displayed opportunity to sportsbooks the user can access."""
     selected = {sportsbook.casefold() for sportsbook in sportsbooks}
     return tuple(item for item in values if item.quote.sportsbook.name.casefold() in selected)
 
@@ -4309,19 +4307,19 @@ def run() -> None:
             minimum_ev=Decimal("0"),
             include_stale=True,
         )
-        recommendation_pool = _values_for_selected_sportsbooks(
+        selected_book_values = _values_for_selected_sportsbooks(
             market_values,
             ev_filters.my_books,
         )
         recommendation_values = _filter_value_opportunities(
-            recommendation_pool,
+            selected_book_values,
             event_map,
             ev_filters,
             as_of=as_of,
             max_age=controls["freshness"],
         )
         all_filtered_values = _filter_value_opportunities(
-            market_values,
+            selected_book_values,
             event_map,
             _without_recommendation_probability_screen(ev_filters),
             as_of=as_of,
