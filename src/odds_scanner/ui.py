@@ -4334,7 +4334,7 @@ def run() -> None:
             as_of=as_of,
             max_age=controls["freshness"],
             candidate_sportsbooks=ev_filters.my_books,
-            include_stale=False,
+            include_stale=True,
         )
         visible_recommendation_values = opportunities_from_value_audit(
             visible_recommendation_audit,
