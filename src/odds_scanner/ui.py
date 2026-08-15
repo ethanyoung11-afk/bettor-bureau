@@ -398,6 +398,44 @@ def _load_view_snapshot(
 def _invalidate_view_snapshot(provider_id: str) -> None:
     st.session_state.pop(f"view_snapshot_{provider_id}", None)
     st.session_state.pop(f"shared_snapshot_checked_at_{provider_id}", None)
+    st.session_state.pop("value_opportunity_cache", None)
+
+
+def _value_opportunities_for_books(
+    quotes: tuple[Quote, ...],
+    sportsbook_names: tuple[str, ...],
+) -> tuple[ValueOpportunity, ...]:
+    """Reuse consensus analysis while users move between views and unchanged filters."""
+    latest_observation = max(
+        (quote.observed_at for quote in quotes),
+        default=datetime.min.replace(tzinfo=UTC),
+    )
+    cache_key = (
+        len(quotes),
+        latest_observation,
+        tuple(sorted(sportsbook_names)),
+    )
+    cache = st.session_state.setdefault("value_opportunity_cache", {})
+    if isinstance(cache, dict):
+        cached = cache.get(cache_key)
+        if isinstance(cached, tuple):
+            return cached
+    else:
+        cache = {}
+        st.session_state["value_opportunity_cache"] = cache
+
+    audit = audit_consensus_value(
+        quotes,
+        as_of=latest_observation,
+        max_age=timedelta(0),
+        candidate_sportsbooks=sportsbook_names,
+        include_stale=True,
+    )
+    values = opportunities_from_value_audit(audit, minimum_ev=Decimal("0"))
+    if len(cache) >= 8:
+        cache.pop(next(iter(cache)))
+    cache[cache_key] = values
+    return values
 
 
 def _oddspapi_requests_used(
@@ -4230,6 +4268,85 @@ def _render_launch_disclosures(mode: str) -> None:
         )
 
 
+@st.fragment  # type: ignore[untyped-decorator]
+def _render_primary_dashboard(
+    available_books: list[str],
+    controls: dict[str, Any],
+    events: tuple[Event, ...],
+    quotes: tuple[Quote, ...],
+    event_map: dict[str, Event],
+    repository: QuoteRepository,
+    *,
+    is_admin: bool,
+) -> None:
+    """Keep view and filter changes inside a lightweight partial rerun."""
+    tab_names = ["Best Bets", "Games", "Results"]
+    saved_view = str(
+        st.session_state.get(
+            "primary_dashboard_view",
+            st.session_state.get("dashboard_view", "Best Bets"),
+        )
+    )
+    default_view = saved_view if saved_view in tab_names else "Best Bets"
+    with st.container(key="dashboard_nav"):
+        active_view = (
+            st.segmented_control(
+                "Dashboard section",
+                tab_names,
+                default=default_view,
+                key="primary_dashboard_view",
+                label_visibility="collapsed",
+            )
+            or "Best Bets"
+        )
+
+    as_of = datetime.now(UTC)
+    if active_view == "Best Bets":
+        ev_filters = _render_ev_filter_bar(
+            available_books,
+            str(controls["mode"]),
+            events,
+            quotes,
+            as_of,
+        )
+        market_values = _value_opportunities_for_books(quotes, ev_filters.my_books)
+        all_filtered_values = _filter_value_opportunities(
+            market_values,
+            event_map,
+            ev_filters,
+            as_of=as_of,
+            max_age=controls["freshness"],
+        )
+        visible_recommendations = _recommended_value_opportunities(
+            market_values,
+            event_map,
+            as_of=as_of,
+        )
+        _render_overview(
+            all_filtered_values,
+            event_map,
+            quotes,
+            as_of,
+            controls["odds_format"],
+            recommendation_values=visible_recommendations,
+        )
+    elif active_view == "Games":
+        comparison_books = sorted(
+            {quote.sportsbook.name for quote in quotes},
+            key=_book_sort_key,
+        )
+        _render_games(
+            quotes,
+            events,
+            controls["odds_format"],
+            comparison_books,
+            repository,
+            is_admin=is_admin,
+        )
+    else:
+        _render_official_performance(repository, controls["odds_format"])
+
+
 def run() -> None:
     app_icon = Path(__file__).resolve().parents[2] / "assets" / "bettor-bureau-app-icon.png"
     st.set_page_config(
@@ -4382,93 +4499,15 @@ def run() -> None:
     event_map, _ = _event_maps(events)
     _render_odds_status(quotes, fresh_quotes, as_of, container=header_odds_status)
 
-    tab_names = ["Best Bets", "Games", "Results"]
-    saved_view = str(
-        st.session_state.get(
-            "primary_dashboard_view",
-            st.session_state.get("dashboard_view", "Best Bets"),
-        )
+    _render_primary_dashboard(
+        available_books,
+        controls,
+        events,
+        quotes,
+        event_map,
+        repository,
+        is_admin=is_admin,
     )
-    default_view = saved_view if saved_view in tab_names else "Best Bets"
-    with st.container(key="dashboard_nav"):
-        active_view = (
-            st.segmented_control(
-                "Dashboard section",
-                tab_names,
-                default=default_view,
-                key="primary_dashboard_view",
-                label_visibility="collapsed",
-            )
-            or "Best Bets"
-        )
-
-    if active_view == "Best Bets":
-        ev_filters = _render_ev_filter_bar(
-            available_books,
-            str(controls["mode"]),
-            events,
-            quotes,
-            as_of,
-        )
-        value_audit = audit_consensus_value(
-            quotes,
-            as_of=as_of,
-            max_age=controls["freshness"],
-            candidate_sportsbooks=ev_filters.my_books,
-            include_stale=True,
-        )
-        market_values = opportunities_from_value_audit(
-            value_audit,
-            minimum_ev=Decimal("0"),
-        )
-        all_filtered_values = _filter_value_opportunities(
-            market_values,
-            event_map,
-            ev_filters,
-            as_of=as_of,
-            max_age=controls["freshness"],
-        )
-
-        visible_recommendation_audit = audit_consensus_value(
-            quotes,
-            as_of=as_of,
-            max_age=controls["freshness"],
-            candidate_sportsbooks=ev_filters.my_books,
-            include_stale=True,
-        )
-        visible_recommendation_values = opportunities_from_value_audit(
-            visible_recommendation_audit,
-            minimum_ev=Decimal("0"),
-        )
-        visible_recommendations = _recommended_value_opportunities(
-            visible_recommendation_values,
-            event_map,
-            as_of=as_of,
-        )
-        controls["my_books"] = list(ev_filters.my_books)
-        _render_overview(
-            all_filtered_values,
-            event_map,
-            quotes,
-            as_of,
-            controls["odds_format"],
-            recommendation_values=visible_recommendations,
-        )
-    elif active_view == "Games":
-        comparison_books = sorted(
-            {quote.sportsbook.name for quote in quotes},
-            key=_book_sort_key,
-        )
-        _render_games(
-            quotes,
-            events,
-            controls["odds_format"],
-            comparison_books,
-            repository,
-            is_admin=is_admin,
-        )
-    else:
-        _render_official_performance(repository, controls["odds_format"])
 
     _render_launch_disclosures(str(controls["mode"]))
     _render_owner_panel(
