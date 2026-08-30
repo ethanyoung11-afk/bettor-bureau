@@ -179,12 +179,17 @@ class OddsApiProvider:
                         # Suspended markets can surface placeholder prices such as 0 or 1.00.
                         # They are not executable odds and must never enter the quote store.
                         continue
-                    outcome = self.market_normalizer.normalize_outcome(
-                        event,
-                        definition,
-                        str(raw_outcome["name"]),
-                        raw_outcome.get("point"),
-                    )
+                    try:
+                        outcome = self.market_normalizer.normalize_outcome(
+                            event,
+                            definition,
+                            str(raw_outcome["name"]),
+                            raw_outcome.get("point"),
+                        )
+                    except (KeyError, NormalizationError, ValueError):
+                        # Some feeds mix three-way draw prices into otherwise two-way h2h data,
+                        # or temporarily publish incomplete lines. Skip only the incompatible row.
+                        continue
                     result.append(
                         Quote(
                             provider_id=self.provider_id,

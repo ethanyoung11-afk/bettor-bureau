@@ -114,3 +114,16 @@ def test_skips_suspended_or_invalid_prices() -> None:
 
     assert len(snapshot.quotes) == 4
     assert all(quote.decimal_odds > 1 for quote in snapshot.quotes)
+
+
+def test_skips_three_way_draws_in_two_way_moneyline_markets() -> None:
+    payload = _event_payload()
+    outcomes = payload[0]["bookmakers"][0]["markets"][0]["outcomes"]  # type: ignore[index]
+    outcomes.append({"name": "Draw", "price": 3.5})  # type: ignore[union-attr]
+    session = StubSession(StubResponse(payload))
+    provider = OddsApiProvider(api_key="secret", session=session)  # type: ignore[arg-type]
+
+    snapshot = provider.fetch_snapshot(["americanfootball_cfl"], ["h2h"])
+
+    assert len(snapshot.quotes) == 4
+    assert all(quote.outcome.side.value != "draw" for quote in snapshot.quotes)
