@@ -85,6 +85,7 @@ def test_fetches_canadian_and_international_books_with_real_timestamps() -> None
     assert provider.quota_used == 24
     assert provider.quota_remaining == 476
     assert provider.last_request_cost == 4
+    assert provider.request_count == 4
 
 
 def test_skips_prices_without_a_provider_freshness_timestamp() -> None:

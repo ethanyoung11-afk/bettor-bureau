@@ -1740,7 +1740,7 @@ def _render_owner_panel(
                         text=f"{used} of {credit_limit} credits used",
                     )
                 if last_cost:
-                    st.caption(f"Last completed refresh cost: {last_cost} credits")
+                    st.caption(f"Last API request cost: {last_cost} credits")
             else:
                 used = _oddspapi_requests_used(repository)
                 credit_limit = _oddspapi_credit_limit(repository)

@@ -134,10 +134,11 @@ class OddsApiProvider:
             },
             timeout=self.timeout_seconds,
         )
-        self.request_count += 1
         self.quota_used = _header_integer(response.headers, "x-requests-used")
         self.quota_remaining = _header_integer(response.headers, "x-requests-remaining")
         self.last_request_cost = _header_integer(response.headers, "x-requests-last")
+        # Refresh diagnostics count provider credits, not only HTTP round trips.
+        self.request_count += self.last_request_cost or 1
         try:
             response.raise_for_status()
         except requests.HTTPError as exc:
