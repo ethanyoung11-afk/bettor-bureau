@@ -1724,15 +1724,32 @@ def _render_owner_panel(
             provider_id = _provider_id(mode)
             background_status = OWNER_REFRESH_RUNNER.status(provider_id)
             refresh_running = bool(background_status and background_status.is_running)
-            used = _oddspapi_requests_used(repository)
-            credit_limit = _oddspapi_credit_limit(repository)
-            remaining = max(0, credit_limit - used)
             st.markdown("#### Odds administration")
-            st.metric("API calls remaining this month", remaining)
-            st.progress(
-                min(1.0, used / credit_limit),
-                text=f"{used} of {credit_limit} calls used",
-            )
+            if provider_id == "the-odds-api":
+                settings = _cached_settings(repository)
+                used_text = settings.get("odds_api_quota_used", "")
+                remaining_text = settings.get("odds_api_quota_remaining", "")
+                last_cost = settings.get("odds_api_last_request_cost", "")
+                st.metric("API credits remaining this month", remaining_text or "—")
+                if used_text and remaining_text:
+                    used = int(used_text)
+                    remaining = int(remaining_text)
+                    credit_limit = max(1, used + remaining)
+                    st.progress(
+                        min(1.0, used / credit_limit),
+                        text=f"{used} of {credit_limit} credits used",
+                    )
+                if last_cost:
+                    st.caption(f"Last completed refresh cost: {last_cost} credits")
+            else:
+                used = _oddspapi_requests_used(repository)
+                credit_limit = _oddspapi_credit_limit(repository)
+                remaining = max(0, credit_limit - used)
+                st.metric("API calls remaining this month", remaining)
+                st.progress(
+                    min(1.0, used / credit_limit),
+                    text=f"{used} of {credit_limit} calls used",
+                )
             st.caption("Only the owner and the central scheduled updater can spend API calls.")
             st.button(
                 "Refresh running..." if refresh_running else "Refresh latest odds",

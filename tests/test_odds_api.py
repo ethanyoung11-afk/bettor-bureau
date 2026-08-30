@@ -96,3 +96,21 @@ def test_skips_prices_without_a_provider_freshness_timestamp() -> None:
     assert snapshot.events
     assert snapshot.quotes == ()
 
+
+def test_skips_suspended_or_invalid_prices() -> None:
+    payload = _event_payload()
+    outcomes = payload[0]["bookmakers"][0]["markets"][0]["outcomes"]  # type: ignore[index]
+    outcomes.extend(  # type: ignore[union-attr]
+        [
+            {"name": "BC Lions", "price": 1},
+            {"name": "Calgary Stampeders", "price": 0},
+            {"name": "BC Lions", "price": None},
+        ]
+    )
+    session = StubSession(StubResponse(payload))
+    provider = OddsApiProvider(api_key="secret", session=session)  # type: ignore[arg-type]
+
+    snapshot = provider.fetch_snapshot(["americanfootball_cfl"], ["h2h"])
+
+    assert len(snapshot.quotes) == 4
+    assert all(quote.decimal_odds > 1 for quote in snapshot.quotes)

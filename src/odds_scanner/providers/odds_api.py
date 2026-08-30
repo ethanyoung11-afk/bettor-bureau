@@ -171,13 +171,20 @@ class OddsApiProvider:
                     continue
                 market_updated = parse_timestamp(source_timestamp, fetched_at)
                 for raw_outcome in raw_market.get("outcomes", []):
+                    try:
+                        price: Decimal = decimal_value(raw_outcome.get("price"))
+                    except (TypeError, ValueError):
+                        continue
+                    if price <= Decimal("1"):
+                        # Suspended markets can surface placeholder prices such as 0 or 1.00.
+                        # They are not executable odds and must never enter the quote store.
+                        continue
                     outcome = self.market_normalizer.normalize_outcome(
                         event,
                         definition,
                         str(raw_outcome["name"]),
                         raw_outcome.get("point"),
                     )
-                    price: Decimal = decimal_value(raw_outcome["price"])
                     result.append(
                         Quote(
                             provider_id=self.provider_id,
