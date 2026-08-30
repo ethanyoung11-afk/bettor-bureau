@@ -90,7 +90,7 @@ MARKET_LABELS = {
 DATA_SOURCE_IDS = {
     "Demo": "demo",
     "OddsPapi Free": "oddspapi",
-    "The Odds API": "the-odds-api",
+    "The Odds API": "the-odds-api-v2",
 }
 PRIORITY_BOOKS = ("PlayNow", "Betway")
 SPORTSBOOK_URLS = {
@@ -1725,7 +1725,7 @@ def _render_owner_panel(
             background_status = OWNER_REFRESH_RUNNER.status(provider_id)
             refresh_running = bool(background_status and background_status.is_running)
             st.markdown("#### Odds administration")
-            if provider_id == "the-odds-api":
+            if provider_id.startswith("the-odds-api"):
                 settings = _cached_settings(repository)
                 used_text = settings.get("odds_api_quota_used", "")
                 remaining_text = settings.get("odds_api_quota_remaining", "")
@@ -1813,6 +1813,8 @@ def _render_header_dashboard(
 def _market_label(market: MarketKey) -> str:
     if market.kind is MarketKind.PLAYER_PROP:
         return market.stat_key or "Player prop"
+    if market.kind is MarketKind.MONEYLINE and OutcomeSide.DRAW in market.required_sides:
+        return "3-way moneyline"
     label = MARKET_NAMES[market.kind]
     if market.line is not None:
         if market.kind is MarketKind.SPREAD:

@@ -1,19 +1,20 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
 import requests
 
-from odds_scanner.domain import OddsSnapshot, Quote, Sportsbook, stable_id
+from odds_scanner.domain import MarketKind, OddsSnapshot, OutcomeSide, Quote, Sportsbook, stable_id
 from odds_scanner.normalization import (
     FOOTBALL_MARKETS,
     IdentityResolver,
     MarketNormalizer,
     NormalizationError,
+    canonical_token,
     decimal_value,
     make_sport_and_league,
 )
@@ -74,7 +75,9 @@ class OddsApiProvider:
 
     @property
     def provider_id(self) -> str:
-        return "the-odds-api"
+        # V2 quarantines the earlier feed snapshot that incorrectly collapsed three-way
+        # regulation markets into two-way moneylines.
+        return "the-odds-api-v2"
 
     def fetch_snapshot(
         self,
@@ -166,12 +169,27 @@ class OddsApiProvider:
                 definition = FOOTBALL_MARKETS.get(str(raw_market.get("key")))
                 if definition is None:
                     continue
+                raw_outcomes = tuple(raw_market.get("outcomes", []))
+                if definition.kind is MarketKind.MONEYLINE:
+                    has_draw = any(
+                        canonical_token(str(item.get("name", ""))) in {"draw", "tie"}
+                        for item in raw_outcomes
+                    )
+                    definition = replace(
+                        definition,
+                        required_sides=(
+                            (OutcomeSide.HOME, OutcomeSide.DRAW, OutcomeSide.AWAY)
+                            if has_draw
+                            else (OutcomeSide.HOME, OutcomeSide.AWAY)
+                        ),
+                        variant="three_way" if has_draw else "two_way",
+                    )
                 source_timestamp = raw_market.get("last_update") or raw_book.get("last_update")
                 if not source_timestamp:
                     # Never manufacture freshness for a recommendation-bearing price.
                     continue
                 market_updated = parse_timestamp(source_timestamp, fetched_at)
-                for raw_outcome in raw_market.get("outcomes", []):
+                for raw_outcome in raw_outcomes:
                     try:
                         price: Decimal = decimal_value(raw_outcome.get("price"))
                     except (TypeError, ValueError):
@@ -188,8 +206,8 @@ class OddsApiProvider:
                             raw_outcome.get("point"),
                         )
                     except (KeyError, NormalizationError, ValueError):
-                        # Some feeds mix three-way draw prices into otherwise two-way h2h data,
-                        # or temporarily publish incomplete lines. Skip only the incompatible row.
+                        # Temporarily incomplete or malformed provider rows should not block the
+                        # rest of the league refresh.
                         continue
                     result.append(
                         Quote(

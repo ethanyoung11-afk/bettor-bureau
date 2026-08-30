@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from odds_scanner.domain import OutcomeSide
 from odds_scanner.providers.odds_api import OddsApiProvider
 
 
@@ -117,14 +118,33 @@ def test_skips_suspended_or_invalid_prices() -> None:
     assert all(quote.decimal_odds > 1 for quote in snapshot.quotes)
 
 
-def test_skips_three_way_draws_in_two_way_moneyline_markets() -> None:
+def test_separates_three_way_draw_markets_from_two_way_moneylines() -> None:
     payload = _event_payload()
-    outcomes = payload[0]["bookmakers"][0]["markets"][0]["outcomes"]  # type: ignore[index]
-    outcomes.append({"name": "Draw", "price": 3.5})  # type: ignore[union-attr]
+    bookmakers = payload[0]["bookmakers"]  # type: ignore[index]
+    bookmakers[1]["markets"] = [  # type: ignore[index]
+        {
+            "key": "h2h",
+            "last_update": "2026-08-30T15:58:00Z",
+            "outcomes": [
+                {"name": "BC Lions", "price": 2.8},
+                {"name": "Draw", "price": 3.5},
+                {"name": "Calgary Stampeders", "price": 2.6},
+            ],
+        }
+    ]
     session = StubSession(StubResponse(payload))
     provider = OddsApiProvider(api_key="secret", session=session)  # type: ignore[arg-type]
 
     snapshot = provider.fetch_snapshot(["americanfootball_cfl"], ["h2h"])
 
-    assert len(snapshot.quotes) == 4
-    assert all(quote.outcome.side.value != "draw" for quote in snapshot.quotes)
+    assert len(snapshot.quotes) == 5
+    two_way = [quote for quote in snapshot.quotes if quote.sportsbook.name == "PlayNow"]
+    three_way = [quote for quote in snapshot.quotes if quote.sportsbook.name == "Betway"]
+    assert {quote.outcome.side for quote in two_way} == {OutcomeSide.HOME, OutcomeSide.AWAY}
+    assert {quote.outcome.side for quote in three_way} == {
+        OutcomeSide.HOME,
+        OutcomeSide.DRAW,
+        OutcomeSide.AWAY,
+    }
+    assert {quote.outcome.market.variant for quote in two_way} == {"two_way"}
+    assert {quote.outcome.market.variant for quote in three_way} == {"three_way"}
