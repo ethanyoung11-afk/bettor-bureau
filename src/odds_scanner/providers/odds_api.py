@@ -38,12 +38,8 @@ FOOTBALL_LEAGUES: Mapping[str, LeagueConfig] = {
     "americanfootball_cfl": LeagueConfig(
         "americanfootball_cfl", "american-football", "American Football", "cfl", "CFL"
     ),
-    "basketball_nba": LeagueConfig(
-        "basketball_nba", "basketball", "Basketball", "nba", "NBA"
-    ),
-    "icehockey_nhl": LeagueConfig(
-        "icehockey_nhl", "ice-hockey", "Ice Hockey", "nhl", "NHL"
-    ),
+    "basketball_nba": LeagueConfig("basketball_nba", "basketball", "Basketball", "nba", "NBA"),
+    "icehockey_nhl": LeagueConfig("icehockey_nhl", "ice-hockey", "Ice Hockey", "nhl", "NHL"),
 }
 
 
@@ -64,7 +60,7 @@ def parse_timestamp(value: object, fallback: datetime) -> datetime:
 @dataclass(slots=True)
 class OddsApiProvider:
     api_key: str
-    regions: str = "us"
+    regions: str = "ca,us,uk,eu"
     odds_format: str = "decimal"
     timeout_seconds: float = 20.0
     base_url: str = "https://api.the-odds-api.com/v4"
@@ -72,6 +68,9 @@ class OddsApiProvider:
     identity_resolver: IdentityResolver = field(default_factory=IdentityResolver)
     market_normalizer: MarketNormalizer = field(default_factory=MarketNormalizer)
     request_count: int = field(default=0, init=False)
+    quota_used: int | None = field(default=None, init=False)
+    quota_remaining: int | None = field(default=None, init=False)
+    last_request_cost: int | None = field(default=None, init=False)
 
     @property
     def provider_id(self) -> str:
@@ -136,6 +135,9 @@ class OddsApiProvider:
             timeout=self.timeout_seconds,
         )
         self.request_count += 1
+        self.quota_used = _header_integer(response.headers, "x-requests-used")
+        self.quota_remaining = _header_integer(response.headers, "x-requests-remaining")
+        self.last_request_cost = _header_integer(response.headers, "x-requests-last")
         try:
             response.raise_for_status()
         except requests.HTTPError as exc:
@@ -159,12 +161,15 @@ class OddsApiProvider:
                 id=stable_id("sportsbook", self.provider_id, book_key),
                 name=str(raw_book.get("title", book_key)),
             )
-            book_updated = parse_timestamp(raw_book.get("last_update"), fetched_at)
             for raw_market in raw_book.get("markets", []):
                 definition = FOOTBALL_MARKETS.get(str(raw_market.get("key")))
                 if definition is None:
                     continue
-                market_updated = parse_timestamp(raw_market.get("last_update"), book_updated)
+                source_timestamp = raw_market.get("last_update") or raw_book.get("last_update")
+                if not source_timestamp:
+                    # Never manufacture freshness for a recommendation-bearing price.
+                    continue
+                market_updated = parse_timestamp(source_timestamp, fetched_at)
                 for raw_outcome in raw_market.get("outcomes", []):
                     outcome = self.market_normalizer.normalize_outcome(
                         event,
@@ -182,6 +187,25 @@ class OddsApiProvider:
                             source_updated_at=market_updated,
                             observed_at=fetched_at,
                             source_event_id=str(raw.get("id", "")) or None,
+                            source_url=(
+                                str(
+                                    raw_outcome.get("link")
+                                    or raw_market.get("link")
+                                    or raw_book.get("link")
+                                    or ""
+                                )
+                                or None
+                            ),
                         )
                     )
         return event, result
+
+
+def _header_integer(response_headers: Mapping[str, Any], name: str) -> int | None:
+    value = response_headers.get(name)
+    if value is None:
+        return None
+    try:
+        return max(0, int(str(value)))
+    except ValueError:
+        return None

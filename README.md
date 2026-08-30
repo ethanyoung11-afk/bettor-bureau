@@ -36,14 +36,17 @@ The intentionally stale demo book verifies that stale prices are excluded from o
 
 ## Live data
 
-For the BC-first free workflow, select **OddsPapi Free**, open **Odds Data**, choose the sports
-and markets you want, and press **Refresh Odds**. Page loads, visitors, filters, sorting, and
-navigation never call the provider. The initial refresh scope supports NFL, NCAAF, CFL, NBA,
-and NHL, including available moneylines, spreads, totals, and player props. Starter accounts
-require one odds request per sportsbook, so a full ten-book update normally costs about ten
-requests. The app also syncs each league's complete fixture schedule once per week so the Games
-page includes events before odds are posted; these rows display **Odds not available yet** until
-a sportsbook publishes a line. Catalog and fixture discovery can use a few additional requests.
+For the BC-first workflow, configure **The Odds API** with `ODDS_API_KEY` and use
+`ODDS_API_REGIONS=ca,us,uk,eu` for broad consensus coverage. The Canadian region includes
+PlayNow; UK coverage supplies Betway when that feed is available. Open **Owner controls** and
+press **Refresh Odds**. Page loads, visitors, filters, sorting, and navigation never call the
+provider. The initial refresh scope supports NFL, NCAAF, CFL, NBA, and NHL, including available
+moneylines, spreads, totals, and supported player props. The owner panel records the provider's
+reported credit usage, remaining allowance, and last-request cost.
+
+The 500-credit free plan is suitable for a manual coverage trial, not continuous broad-region
+refreshes. Request cost grows with the number of selected regions and markets. Start with manual
+refreshes and confirm PlayNow, Betway, and comparison-book coverage before enabling a schedule.
 
 Every managed refresh rechecks affected +EV recommendations. Price moves or removed markets
 deactivate the recommendation without deleting its history. Failed requests preserve the last
@@ -58,7 +61,8 @@ secrets panel (never commit the real values):
 ```toml
 SHARED_APP = "true"
 ADMIN_PASSWORD_HASH = "sha256-digest-of-the-owner-password"
-ODDSPAPI_API_KEY = "your-server-side-feed-key"
+ODDS_API_KEY = "your-server-side-feed-key"
+ODDS_API_REGIONS = "ca,us,uk,eu"
 DATABASE_URL = "your-postgres-connection-string"
 ```
 
@@ -67,24 +71,23 @@ feed credentials, saved settings, watchlists, and bet tracking remain hidden unt
 unlocks the app. Without `DATABASE_URL`, the local app continues to use SQLite; hosted sharing
 should use Postgres so every visitor sees the same durable snapshot.
 
-The browser checks the shared database once a minute and redraws only when the central worker has
-stored newer odds. These checks do not call OddsPapi. The included GitHub workflow runs the
-central refresh four times per week and can also be started manually. It protects a configurable
-monthly reserve before making provider calls.
+The browser checks the shared database and redraws only when the owner has stored newer odds.
+These viewer checks do not call the odds provider.
 
 ### Free beta deployment
 
 1. Create a Neon Postgres database and copy its pooled connection string.
 2. Push this repository to a private GitHub repository.
-3. Add `DATABASE_URL` and `ODDSPAPI_API_KEY` as GitHub Actions repository secrets.
+3. Add `DATABASE_URL` and `ODDS_API_KEY` as GitHub Actions repository secrets before enabling a
+   scheduled The Odds API worker.
 4. Deploy `app.py` on Streamlit Community Cloud from that repository.
-5. Add `SHARED_APP`, `ADMIN_PASSWORD_HASH`, `ODDSPAPI_API_KEY`, and `DATABASE_URL` in
-   Streamlit's encrypted secrets panel.
+5. Add `SHARED_APP`, `ADMIN_PASSWORD_HASH`, `ODDS_API_KEY`, `ODDS_API_REGIONS`, and
+   `DATABASE_URL` in Streamlit's encrypted secrets panel.
 6. Share the hosted app at `bettor-bureau.streamlit.app`.
 
-The scheduled updater is in `.github/workflows/refresh-odds.yml`. Its free-plan defaults are four
-full refreshes per week, a 250-call monthly limit, and a 25-call owner reserve. Manual owner
-refreshes share the same allowance. Increase the schedule only after the provider plan is upgraded.
+The existing scheduled updater still targets OddsPapi. Keep it disabled during The Odds API free
+trial; use owner-triggered refreshes until actual per-refresh credit cost and sportsbook coverage
+have been verified. Then update the worker and schedule to fit the chosen paid allowance.
 
 ### Official paper strategy
 
@@ -102,9 +105,8 @@ before portfolio scaling. A pick is recorded once at its original sportsbook and
 movement never rewrites history.
 Run `python -m odds_scanner.strategy_review` to generate the weekly performance and strategy report.
 
-Select **The Odds API** in the sidebar, enter a key from
-[The Odds API](https://the-odds-api.com/), and choose **Fetch live odds**. The rest of the product
-uses the same normalized domain objects and opportunity engines in either mode.
+When `ODDS_API_KEY` is present, the hosted app selects **The Odds API** automatically. The rest of
+the product uses the same normalized domain objects and opportunity engines in either mode.
 
 ## Architecture
 

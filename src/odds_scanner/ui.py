@@ -206,6 +206,14 @@ def _provider_id(mode: str) -> str:
     return DATA_SOURCE_IDS.get(mode, "demo")
 
 
+def _configured_data_source() -> str:
+    if _local_secret("ODDS_API_KEY"):
+        return "The Odds API"
+    if _local_secret("ODDSPAPI_API_KEY"):
+        return "OddsPapi Free"
+    return "Demo"
+
+
 def _book_sort_key(book: str) -> tuple[int, str]:
     try:
         return PRIORITY_BOOKS.index(book), book.lower()
@@ -590,6 +598,22 @@ def _run_background_refresh(
             provider.request_count,
             credit_limit=credit_limit,
         )
+    elif isinstance(provider, OddsApiProvider):
+        repository.save_setting("odds_api_regions", provider.regions)
+        repository.save_setting(
+            "odds_api_quota_used",
+            "" if provider.quota_used is None else str(provider.quota_used),
+        )
+        repository.save_setting(
+            "odds_api_quota_remaining",
+            "" if provider.quota_remaining is None else str(provider.quota_remaining),
+        )
+        repository.save_setting(
+            "odds_api_last_request_cost",
+            "" if provider.last_request_cost is None else str(provider.last_request_cost),
+        )
+        if diagnostics.status is RefreshResultStatus.SUCCESS:
+            repository.save_setting("public_data_source", provider.provider_id)
     return diagnostics
 
 
@@ -1897,6 +1921,11 @@ def _load_defaults(repository: QuoteRepository) -> None:
     st.session_state.setdefault("min_roi", float(stored.get("min_roi", "0.25")))
     st.session_state.setdefault("min_ev", float(stored.get("min_ev", "2.0")))
     st.session_state.setdefault("odds_format", DEFAULT_ODDS_FORMAT)
+    st.session_state.setdefault("data_source", _configured_data_source())
+    st.session_state.setdefault(
+        "odds_api_regions",
+        _local_secret("ODDS_API_REGIONS") or stored.get("odds_api_regions", "ca,us,uk,eu"),
+    )
     st.session_state["terminal_defaults_loaded"] = True
 
 
@@ -1919,15 +1948,18 @@ def _sidebar(
         st.markdown("### BETTOR BUREAU")
         st.caption("Sports-market intelligence")
         saved_oddspapi_key = _local_secret("ODDSPAPI_API_KEY")
+        saved_odds_api_key = _local_secret("ODDS_API_KEY")
         if is_admin:
+            default_mode = _configured_data_source()
             data_mode = st.selectbox(
                 "Data source",
                 list(DATA_SOURCE_IDS),
-                index=1 if saved_oddspapi_key else 0,
+                index=list(DATA_SOURCE_IDS).index(default_mode),
                 key="data_source",
             )
         else:
-            data_mode = "OddsPapi Free"
+            data_mode = _configured_data_source()
+            st.session_state["data_source"] = data_mode
             st.caption("Live odds · refreshed by the owner")
         api_key = ""
         regions = "us"
@@ -1954,21 +1986,48 @@ def _sidebar(
                     )
                     st.link_button("OddsPapi account", "https://oddspapi.io/", width="stretch")
         elif data_mode == "The Odds API":
-            api_key = st.text_input(
-                "The Odds API key",
-                value=os.getenv("ODDS_API_KEY", ""),
-                type="password",
-            )
-            regions = st.selectbox(
-                "Bookmaker regions",
-                ["us", "uk", "us,uk"],
-                format_func={
-                    "us": "United States",
-                    "uk": "United Kingdom (includes Betway)",
-                    "us,uk": "US + UK (uses more credits)",
-                }.get,
-            )
-        if is_admin and data_mode != "Demo" and not saved_oddspapi_key:
+            api_key = saved_odds_api_key
+            regions = str(st.session_state.get("odds_api_regions", "ca,us,uk,eu"))
+            if is_admin:
+                settings = _cached_settings(repository)
+                remaining = settings.get("odds_api_quota_remaining", "")
+                used = settings.get("odds_api_quota_used", "")
+                if remaining:
+                    st.caption(f"Connected · {remaining} credits remaining")
+                with st.expander("Feed account & usage", expanded=False):
+                    api_key = st.text_input(
+                        "The Odds API key",
+                        value=saved_odds_api_key,
+                        type="password",
+                    )
+                    if used or remaining:
+                        last_cost = settings.get("odds_api_last_request_cost", "—")
+                        st.caption(
+                            f"{used or '—'} used · {remaining or '—'} remaining · "
+                            f"last request {last_cost} credits"
+                        )
+                    region_options = ["ca", "ca,us", "ca,us,uk", "ca,us,uk,eu"]
+                    if regions not in region_options:
+                        regions = "ca,us,uk,eu"
+                    regions = st.selectbox(
+                        "Bookmaker coverage",
+                        region_options,
+                        index=region_options.index(regions),
+                        key="odds_api_regions",
+                        format_func={
+                            "ca": "Canada only (includes PlayNow)",
+                            "ca,us": "Canada + US",
+                            "ca,us,uk": "Canada + US + UK (adds Betway)",
+                            "ca,us,uk,eu": "Canada + US + UK + Europe (broad consensus)",
+                        }.get,
+                    )
+                    st.caption("Each market costs one credit per selected region and league.")
+                    st.link_button(
+                        "The Odds API account",
+                        "https://dash.the-odds-api.com/",
+                        width="stretch",
+                    )
+        if is_admin and data_mode != "Demo" and not api_key:
             st.caption("Your key stays in this local session.")
         with st.expander("Analysis settings", expanded=False):
             bankroll = st.text_input("Working bankroll", key="bankroll")
@@ -4596,6 +4655,8 @@ def run() -> None:
         os.getenv("ODDS_DB_PATH", "odds_scanner.db"),
     )
     _load_defaults(repository)
+    if not is_admin:
+        st.session_state["data_source"] = _configured_data_source()
     if not database_url:
         _seed_demo(repository)
     selected_source = str(st.session_state.get("data_source", "Demo"))
