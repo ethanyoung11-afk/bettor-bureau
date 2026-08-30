@@ -1146,30 +1146,46 @@ def _inject_theme() -> None:
         }
         .games-market-group + .games-market-group { margin-top:8px; }
         .games-market-group > summary {
+            display:grid; grid-template-columns:auto 1fr auto; align-items:center; gap:10px;
             padding:.72rem .8rem; cursor:pointer; color:#e7edf5; font-size:.88rem;
             font-weight:750; list-style:none;
         }
-        .games-market-group > summary::-webkit-details-marker { display:none; }
-        .games-market-group > summary::after {
-            content:"⌄"; float:right; color:#8f9daf;
+        .games-market-group > summary small {
+            justify-self:end; color:#8594a6; font-size:.7rem; font-weight:600;
+            letter-spacing:0; text-transform:none;
         }
+        .games-market-group > summary::-webkit-details-marker { display:none; }
+        .games-market-group > summary::after { content:"⌄"; color:#8f9daf; }
         .games-market-group[open] > summary::after { transform:rotate(180deg); }
-        .games-odds-scroll { overflow-x:auto; border-top:1px solid #26374b; }
+        .games-odds-scroll {
+            max-width:100%; overflow-x:auto; border-top:1px solid #26374b;
+            overscroll-behavior-inline:contain; scrollbar-gutter:stable;
+        }
         .games-odds-table {
-            width:100%; min-width:860px; border-collapse:collapse; table-layout:fixed;
+            width:max-content; min-width:100%; border-collapse:separate; border-spacing:0;
+            table-layout:fixed;
             color:#dbe3ec; font-size:.84rem;
         }
         .games-odds-table th,.games-odds-table td {
             border-bottom:1px solid #203043; text-align:center;
         }
+        .games-odds-table th:not(:first-child),
+        .games-odds-table td:not(:first-child) {
+            width:120px; min-width:120px; max-width:120px;
+        }
         .games-odds-table tr:last-child td { border-bottom:0; }
         .games-odds-table th {
             padding:.66rem .55rem; color:#a0adbd; font-size:.7rem; font-weight:700;
-            text-transform:uppercase; letter-spacing:.035em;
+            text-transform:uppercase; letter-spacing:.035em; white-space:nowrap;
+            overflow:hidden; text-overflow:ellipsis; background:#08131f;
         }
         .games-odds-table th:first-child,.games-odds-table td:first-child {
-            width:210px; padding:.65rem .7rem; text-align:left;
+            position:sticky; left:0; width:210px; min-width:210px; max-width:210px;
+            padding:.65rem .7rem; text-align:left; background:#08131f;
+            border-right:1px solid #2a3a4e; box-shadow:7px 0 12px rgba(0,0,0,.18);
         }
+        .games-odds-table th:first-child { z-index:3; }
+        .games-odds-table td:first-child { z-index:2; }
         .games-selection strong { display:block; color:#edf2f7; font-size:.86rem; }
         .games-selection small { display:block; margin-top:3px; color:#9eabbc; font-size:.7rem; }
         .games-price-cell { padding:0; }
@@ -2511,13 +2527,16 @@ def _game_market_sections_markup(
             )
 
         book_headers = "".join(
-            f"<th>{html.escape(sportsbook)}</th>" for sportsbook in sportsbook_names
+            f'<th title="{html.escape(sportsbook, quote=True)}">'
+            f"{html.escape(sportsbook)}</th>"
+            for sportsbook in sportsbook_names
         )
         market_name = MARKET_NAMES[kind]
         open_attribute = " open" if not sections else ""
         sections.append(
             f'<details class="games-market-group"{open_attribute}>'
-            f"<summary>{html.escape(market_name)}</summary>"
+            f"<summary><span>{html.escape(market_name)}</span>"
+            f"<small>{len(sportsbook_names)} books · scroll to compare</small></summary>"
             '<div class="games-odds-scroll"><table class="games-odds-table">'
             f"<thead><tr><th>Selection</th>{book_headers}</tr></thead>"
             f"<tbody>{''.join(rows)}</tbody></table></div></details>"
@@ -2538,9 +2557,14 @@ def _game_event_markup(
     home_name, away_name = _event_team_names(event)
     away_logo = _team_logo_markup(away_name, event.league_id)
     home_logo = _team_logo_markup(home_name, event.league_id)
+    quoted_books = {quote.sportsbook.name for quote in event_quotes}
+    event_sportsbooks = [book for book in sportsbook_names if book in quoted_books]
+    event_sportsbooks.extend(
+        sorted(quoted_books - set(event_sportsbooks), key=_book_sort_key)
+    )
     market_markup = _game_market_sections_markup(
         event_quotes,
-        sportsbook_names,
+        event_sportsbooks,
         odds_format,
         event,
         as_of=as_of,

@@ -153,11 +153,19 @@ def test_games_page_prices_are_clickable_and_best_price_is_highlighted(now):
     assert 'class="games-price-link best"' in markets
     assert 'aria-label="Bet ' in markets
     assert "Moneyline" in markets
-    assert all(f"<th>{sportsbook}</th>" in markets for sportsbook in sportsbooks)
+    assert all(f">{sportsbook}</th>" in markets for sportsbook in sportsbooks)
     assert "Available to you" not in markets
     assert '<details class="games-event">' in event_markup
     assert '<details class="games-event" open>' not in event_markup
     assert event.name in event_markup
+
+    narrowed_event_markup = _game_event_markup(
+        event,
+        event_quotes,
+        [*sportsbooks, "Unavailable Book"],
+        "American",
+    )
+    assert "Unavailable Book" not in narrowed_event_markup
 
 
 def test_games_page_keeps_scheduled_events_before_odds_are_posted(now):
