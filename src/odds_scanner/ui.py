@@ -3513,6 +3513,13 @@ def _sportsbook_bet_url(quote: Quote) -> str | None:
     return _sportsbook_event_url(quote) or SPORTSBOOK_URLS.get(quote.sportsbook.name)
 
 
+def _actionable_value_opportunities(
+    values: tuple[ValueOpportunity, ...],
+) -> tuple[ValueOpportunity, ...]:
+    """Keep only offers that give the user somewhere usable to place the bet."""
+    return tuple(item for item in values if _sportsbook_bet_url(item.quote) is not None)
+
+
 def _render_ev_summary(
     quotes: tuple[Quote, ...],
     values: tuple[ValueOpportunity, ...],
@@ -4107,6 +4114,8 @@ def _value_comparison_markup(
         edge_class = "positive" if book_edge > 0 else "negative"
         event_url = _sportsbook_event_url(quote)
         url = event_url or _sportsbook_bet_url(quote)
+        if url is None:
+            continue
         trusted = _quote_is_trusted(
             quote,
             as_of=as_of,
@@ -4116,8 +4125,6 @@ def _value_comparison_markup(
             f'<a class="ev-price-action" href="{html.escape(url, quote=True)}" '
             f'target="_blank" rel="noopener noreferrer">'
             f"{'Bet' if event_url else 'Open'} ↗</a>"
-            if url
-            else '<span class="ev-price-action">Unavailable</span>'
         )
         if not trusted:
             action = '<span class="ev-price-action">Stale</span>'
@@ -4645,15 +4652,16 @@ def _render_primary_dashboard(
             ev_filters.my_books,
             max_age=MAX_TRUSTED_QUOTE_AGE,
         )
+        actionable_market_values = _actionable_value_opportunities(market_values)
         all_filtered_values = _filter_value_opportunities(
-            market_values,
+            actionable_market_values,
             event_map,
             ev_filters,
             as_of=as_of,
             max_age=controls["freshness"],
         )
         visible_recommendations = _recommended_value_opportunities(
-            market_values,
+            actionable_market_values,
             event_map,
             as_of=as_of,
         )

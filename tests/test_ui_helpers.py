@@ -19,6 +19,7 @@ from odds_scanner.ui import (
     SPORTSBOOK_URLS,
     STARTER_BOOKS,
     EVFilterState,
+    _actionable_value_opportunities,
     _board_header_markup,
     _decode_sportsbook_preferences,
     _event_odds_frame,
@@ -315,6 +316,41 @@ def test_bet_now_prefers_a_verified_event_deep_link(now):
     assert _sportsbook_bet_url(direct_quote) == event_url
     assert _sportsbook_event_url(unsafe_quote) is None
     assert _sportsbook_bet_url(unsafe_quote) == SPORTSBOOK_URLS["Betway"]
+
+
+def test_non_actionable_value_bets_are_hidden_but_can_remain_in_consensus(now):
+    snapshots = generate_demo_snapshots(now)
+    quotes = deduplicate_quotes(quote for snapshot in snapshots for quote in snapshot.quotes)
+    opportunity = detect_consensus_value(
+        quotes,
+        as_of=now,
+        max_age=timedelta(minutes=5),
+        minimum_ev=Decimal("0"),
+    )[0]
+    unavailable_quote = replace(
+        opportunity.quote,
+        sportsbook=replace(
+            opportunity.quote.sportsbook,
+            id="unavailable-book",
+            name="Unavailable Book",
+        ),
+        source_url=None,
+    )
+    unavailable_opportunity = replace(opportunity, quote=unavailable_quote)
+
+    actionable = _actionable_value_opportunities(
+        (opportunity, unavailable_opportunity),
+    )
+    comparison = _value_comparison_markup(
+        opportunity,
+        (*quotes, unavailable_quote),
+        "American",
+        now,
+    )
+
+    assert actionable == (opportunity,)
+    assert "Unavailable Book" not in comparison
+    assert "Unavailable" not in comparison
 
 
 def test_player_prop_labels_name_the_player_stat_and_line(now):
