@@ -36,6 +36,21 @@ OFFICIAL_MAXIMUM_EVENT_EXPOSURE_FRACTION = Decimal("0.02")
 OFFICIAL_MAXIMUM_LEAGUE_EXPOSURE_FRACTION = Decimal("0.08")
 OFFICIAL_MAXIMUM_SLATE_EXPOSURE_FRACTION = Decimal("0.20")
 OFFICIAL_STAKE_INCREMENT_UNITS = Decimal("0.01")
+LEGACY_ODDSPAPI_SPORTSBOOK_IDS = frozenset(
+    stable_id("sportsbook", "oddspapi", slug)
+    for slug in (
+        "playnow",
+        "betway",
+        "pinnacle",
+        "circasports",
+        "bet365",
+        "betmgm",
+        "caesars",
+        "draftkings",
+        "fanduel",
+        "betrivers",
+    )
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -272,12 +287,16 @@ def _recommendation_id(recommendation: OfficialRecommendation) -> str:
     )
 
 
-def _recommendation_note(recommendation: OfficialRecommendation) -> str:
+def _recommendation_note(
+    recommendation: OfficialRecommendation,
+    provider_id: str,
+) -> str:
     opportunity = recommendation.opportunity
     recommendation_id = _recommendation_id(recommendation)
     metadata = json.dumps(
         {
             "strategy": OFFICIAL_STRATEGY_KEY,
+            "provider_id": provider_id,
             "outcome_id": opportunity.quote.outcome.id,
             "sportsbook_id": opportunity.quote.sportsbook.id,
             "expected_value": str(opportunity.expected_value),
@@ -291,6 +310,23 @@ def _recommendation_note(recommendation: OfficialRecommendation) -> str:
         sort_keys=True,
     )
     return f"{OFFICIAL_RECOMMENDATION_PREFIX}{recommendation_id}|{metadata}"
+
+
+def purge_legacy_oddspapi_official_bets(repository: QuoteRepository) -> int:
+    """Delete paper bets published from the retired, unreliable OddsPapi feed."""
+    legacy_ids: list[int] = []
+    for bet in official_bets(repository.list_bets()):
+        if bet.id is None:
+            continue
+        try:
+            metadata = json.loads(bet.notes.split("|", 1)[1])
+        except (IndexError, TypeError, ValueError):
+            continue
+        if metadata.get("provider_id") == "oddspapi" or metadata.get(
+            "sportsbook_id"
+        ) in LEGACY_ODDSPAPI_SPORTSBOOK_IDS:
+            legacy_ids.append(bet.id)
+    return repository.delete_bets(legacy_ids)
 
 
 def _recorded_position(bet: TrackedBet) -> tuple[str, str, str] | None:
@@ -376,7 +412,7 @@ def publish_official_recommendations(
             sportsbook=opportunity.quote.sportsbook.name,
             decimal_odds=opportunity.quote.decimal_odds,
             stake=recommendation.stake_units,
-            notes=_recommendation_note(recommendation),
+            notes=_recommendation_note(recommendation, provider_id),
         )
         bet_id = repository.add_bet(tracked)
         published.append(

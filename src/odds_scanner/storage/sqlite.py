@@ -726,6 +726,18 @@ class SQLiteQuoteRepository:
             for row in rows
         )
 
+    def delete_bets(self, bet_ids: Sequence[int]) -> int:
+        ids = tuple(dict.fromkeys(int(bet_id) for bet_id in bet_ids))
+        if not ids:
+            return 0
+        placeholders = ", ".join("?" for _ in ids)
+        with self._write_lock, self._connection() as connection:
+            cursor = connection.execute(
+                f"DELETE FROM tracked_bets WHERE id IN ({placeholders})",  # noqa: S608
+                ids,
+            )
+            return max(0, cursor.rowcount)
+
     def update_bet(
         self,
         bet_id: int,

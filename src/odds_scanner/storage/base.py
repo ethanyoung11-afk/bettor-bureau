@@ -70,6 +70,8 @@ class QuoteRepository(Protocol):
 
     def list_bets(self) -> tuple[TrackedBet, ...]: ...
 
+    def delete_bets(self, bet_ids: Sequence[int]) -> int: ...
+
     def update_bet(
         self,
         bet_id: int,

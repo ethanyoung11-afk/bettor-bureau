@@ -167,3 +167,6 @@ def test_settings_watchlist_and_bet_tracker_round_trip(tmp_path, now, event):
     assert repository.list_bets()[0].status is BetStatus.WON
     assert repository.list_bets()[0].profit_loss == Decimal("55")
     assert repository.list_bets()[0].settled_at == settled_at
+    assert repository.delete_bets((bet_id,)) == 1
+    assert repository.delete_bets((bet_id,)) == 0
+    assert repository.list_bets() == ()

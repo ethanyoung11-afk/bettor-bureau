@@ -75,6 +75,7 @@ from odds_scanner.strategy import (
     OFFICIAL_MINIMUM_REFERENCE_BOOKS,
     OFFICIAL_STARTING_BANKROLL_UNITS,
     OFFICIAL_UNIT_VALUE_DOLLARS,
+    purge_legacy_oddspapi_official_bets,
     select_official_recommendations,
 )
 from odds_scanner.strategy import official_bets as strategy_official_bets
@@ -4705,6 +4706,12 @@ def run() -> None:
         database_url,
         os.getenv("ODDS_DB_PATH", "odds_scanner.db"),
     )
+    migration_key = "retired_oddspapi_strategy_bets_purged_v1"
+    migration_settings = _cached_settings(repository)
+    if migration_settings.get(migration_key) != "complete":
+        purge_legacy_oddspapi_official_bets(repository)
+        repository.save_setting(migration_key, "complete")
+        _invalidate_repository_caches()
     _load_defaults(repository)
     if not is_admin:
         st.session_state["data_source"] = _configured_data_source()

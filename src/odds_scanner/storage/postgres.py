@@ -690,6 +690,14 @@ class PostgresQuoteRepository:
             for row in rows
         )
 
+    def delete_bets(self, bet_ids: Sequence[int]) -> int:
+        ids = tuple(dict.fromkeys(int(bet_id) for bet_id in bet_ids))
+        if not ids:
+            return 0
+        with self._connection() as cursor:
+            cursor.execute("DELETE FROM tracked_bets WHERE id = ANY(%s)", (list(ids),))
+            return max(0, cursor.rowcount)
+
     def update_bet(
         self,
         bet_id: int,

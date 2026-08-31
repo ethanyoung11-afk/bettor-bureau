@@ -15,6 +15,8 @@ from odds_scanner.domain import (
     Participant,
     Sport,
     Sportsbook,
+    TrackedBet,
+    stable_id,
 )
 from odds_scanner.refresh import OddsRefreshService, RefreshConfig, RefreshRequest
 from odds_scanner.storage.sqlite import SQLiteQuoteRepository
@@ -28,6 +30,7 @@ from odds_scanner.strategy import (
     OFFICIAL_UNIT_VALUE_DOLLARS,
     official_bankroll_units,
     publish_official_recommendations,
+    purge_legacy_oddspapi_official_bets,
     select_official_recommendations,
 )
 
@@ -218,6 +221,7 @@ def test_successful_refresh_publication_is_idempotent_and_keeps_strategy_metadat
     assert second == ()
     assert len(repository.list_bets()) == 4
     assert all(OFFICIAL_STRATEGY_KEY in bet.notes for bet in first)
+    assert all('"provider_id":"provider"' in bet.notes for bet in first)
     assert all(
         Decimal("1")
         <= bet.stake * OFFICIAL_UNIT_VALUE_DOLLARS
@@ -225,6 +229,46 @@ def test_successful_refresh_publication_is_idempotent_and_keeps_strategy_metadat
         for bet in first
     )
     assert official_bankroll_units(repository.list_bets()) == Decimal("100")
+
+
+def test_retired_oddspapi_strategy_bets_are_precisely_purged(tmp_path, now):
+    repository = SQLiteQuoteRepository(tmp_path / "legacy-strategy.db")
+    common = {
+        "id": None,
+        "created_at": now,
+        "event_name": "Away at Home",
+        "market_label": "Moneyline",
+        "selection": "Home",
+        "sportsbook": "Betway",
+        "decimal_odds": Decimal("2.00"),
+        "stake": Decimal("1"),
+    }
+    legacy_id = repository.add_bet(
+        TrackedBet(
+            **common,
+            event_id="legacy-event",
+            notes=(
+                "official-recommendation:legacy|"
+                + '{"sportsbook_id":"'
+                + stable_id("sportsbook", "oddspapi", "betway")
+                + '"}'
+            ),
+        )
+    )
+    current_id = repository.add_bet(
+        TrackedBet(
+            **common,
+            event_id="current-event",
+            notes=(
+                "official-recommendation:current|"
+                '{"provider_id":"the-odds-api-v2","sportsbook_id":"current-book"}'
+            ),
+        )
+    )
+
+    assert purge_legacy_oddspapi_official_bets(repository) == 1
+    assert [bet.id for bet in repository.list_bets()] == [current_id]
+    assert legacy_id != current_id
 
 
 def test_official_publication_considers_every_available_sportsbook(tmp_path, now):
